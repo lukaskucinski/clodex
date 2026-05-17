@@ -1,0 +1,17 @@
+# Per-project clodex working state — only created when clodex is used on a project, but excluded here in case anyone clones into a project root.
+.clodex/
+
+# Local Claude Code session settings (per-user permission grants, etc.)
+.claude/settings.local.json
+
+# OS / editor noise
+.DS_Store
+Thumbs.db
+*.swp
+.vscode/
+.idea/
+
+# Node / build artifacts (none expected — clodex is pure markdown — but defensive)
+node_modules/
+dist/
+build/

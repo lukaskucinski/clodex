@@ -1,0 +1,16 @@
+{
+  "name": "clodex",
+  "version": "0.2.5",
+  "description": "Autonomous development loop: plan, ship, run codex adversarial-review, and iterate on findings until approved or threshold/iteration cap is reached. v0.2.5 externalizes hard rules to HARD_RULES.md, read fresh via Bash cat at the start of every run — resilient to stale agent sessions (Claude Code caches skill content at session-start; /reload-plugins does not re-inject). v0.2.4 normalized .clodex/ disk layout under runs/<branch-slug>/iter-NNN-{focus.md,codex.json,fix.md}. v0.2.3 forced help/version through Bash for VS Code extension paraphrase-resistance. v0.2.2 added --version flag. v0.2.1 adapted to codex plugin v1.0.4's disable-model-invocation by invoking codex-companion.mjs directly. v0.2 baseline: hard rules, --continue flag, outage-aware retry, 3-failure-mode cap.",
+  "author": {
+    "name": "Lukas Kucinski",
+    "email": "lukaskucinski@gmail.com"
+  },
+  "keywords": [
+    "workflow",
+    "codex",
+    "adversarial-review",
+    "automation",
+    "ralph-loop"
+  ]
+}
