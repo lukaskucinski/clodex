@@ -38,7 +38,7 @@ cat > ~/clodex-marketplace/.claude-plugin/marketplace.json <<'EOF'
   "description": "Clodex plugin via GitHub clone",
   "owner": { "name": "you" },
   "plugins": [
-    { "name": "clodex", "source": "../clodex", "version": "0.2.5", "category": "workflow" }
+    { "name": "clodex", "source": "../clodex", "version": "0.2.6", "category": "workflow" }
   ]
 }
 EOF
@@ -322,7 +322,7 @@ v0.2 hardens against all four failures: the hard rules in SKILL.md make each of 
 ```
 clodex/
 ├── .claude-plugin/
-│   └── plugin.json            # plugin manifest (version 0.2.5)
+│   └── plugin.json            # plugin manifest (version 0.2.6)
 ├── skills/
 │   └── clodex/
 │       └── SKILL.md           # orchestration playbook (the main agent reads this)

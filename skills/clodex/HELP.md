@@ -1,4 +1,4 @@
-`clodex@lukas-local` **v0.2.5** — externalized hard rules to `HARD_RULES.md`, read fresh each run (resilient to stale SKILL.md sessions)
+`clodex@lukas-local` **v0.2.6** — per-iteration `iter-NNN-review.md` (human-readable rendering of codex.json)
 
 ## /clodex — Autonomous Plan → Ship → Review → Fix Loop
 
@@ -94,9 +94,16 @@ A finding blocks iff its severity rank is strictly greater than the threshold ra
 
 `.clodex/state.json` (gitignored, schema v2) records task, branch, PR, iteration, findings_history, prior_runs, pending_migrations. Schema upgrade from v1 happens automatically on first read.
 
-Per-iteration artifacts (as of v0.2.5) live under `.clodex/runs/<branch-slug>/` — one subdirectory per feature branch — with three files per iteration: `iter-NNN-focus.md` (input to codex), `iter-NNN-codex.json` (codex's raw return), `iter-NNN-fix.md` (findings-fixer's structured return). Iteration numbers are zero-padded to 3 digits. Extensions are semantic: `.json` for JSON, `.md` for markdown. The branch slug replaces `/` in the branch name with `--`.
+Per-iteration artifacts (as of v0.2.6) live under `.clodex/runs/<branch-slug>/` — one subdirectory per feature branch — with up to four files per iteration:
 
-Legacy flat files (`.clodex/iter-<N>-*.{txt,md}`) from pre-v0.2.5 runs are not auto-migrated — they remain as forensic artifacts. New runs write only under `runs/<branch-slug>/`.
+- `iter-NNN-focus.md` (always) — input: focus text sent to codex
+- `iter-NNN-codex.json` (always) — output: codex's raw return, machine-readable
+- `iter-NNN-review.md` (always, v0.2.6+) — output: human-readable rendering of codex.json
+- `iter-NNN-fix.md` (only when findings-fixer was dispatched) — action: triage + commit summary
+
+Iteration numbers are zero-padded to 3 digits. Extensions are semantic: `.json` for JSON, `.md` for markdown. The branch slug replaces `/` in the branch name with `--`.
+
+Legacy flat files (`.clodex/iter-<N>-*.{txt,md}`) from pre-v0.2.6 runs are not auto-migrated — they remain as forensic artifacts. New runs write only under `runs/<branch-slug>/`.
 
 ### Phase outline
 

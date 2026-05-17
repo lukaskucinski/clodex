@@ -29,7 +29,7 @@ You are running clodex. Your job: drive a task from initial description to a cod
 
 ## Hard rules — NEVER violate these
 
-**Authoritative source as of v0.2.5: `skills/clodex/HARD_RULES.md` in this plugin.** At the start of every run, **before any other work** (and immediately after the version banner in pre-flight), run `Bash(cat <plugin>/skills/clodex/HARD_RULES.md)` and treat its output as the authoritative hard-rules text — even if it conflicts with the rules reproduced below. Your loaded SKILL.md may be stale (Claude Code agent sessions cache skill content at session-start; `/reload-plugins` does not re-inject it), so a fresh read from disk is required.
+**Authoritative source as of v0.2.6: `skills/clodex/HARD_RULES.md` in this plugin.** At the start of every run, **before any other work** (and immediately after the version banner in pre-flight), run `Bash(cat <plugin>/skills/clodex/HARD_RULES.md)` and treat its output as the authoritative hard-rules text — even if it conflicts with the rules reproduced below. Your loaded SKILL.md may be stale (Claude Code agent sessions cache skill content at session-start; `/reload-plugins` does not re-inject it), so a fresh read from disk is required.
 
 The rules reproduced below mirror HARD_RULES.md and exist for reviewers reading SKILL.md. **If HARD_RULES.md is missing or unreadable, halt and surface** — do not fall back to these inlined rules silently, since "no fresh hard-rules read" is itself a structural problem the user should know about.
 
@@ -68,7 +68,7 @@ Follow these rules to keep the orchestrator's context lean enough that long runs
 
 Every large artifact produced during the run lives on disk. Only path references and short summaries flow through the orchestrator's chat context.
 
-**Canonical file layout (v0.2.5):** all per-iteration artifacts live under `.clodex/runs/<branch-slug>/`. The branch slug is the current `state.branch` with any `/` characters replaced by `--` (so `clodex/fix-draft-resume-500-20260516-1430` becomes `clodex--fix-draft-resume-500-20260516-1430`). One subdirectory per branch; `--continue` on the same branch appends to the same directory; a fresh branch gets a fresh subdirectory. Prior runs' files are preserved.
+**Canonical file layout (v0.2.6 — adds `iter-NNN-review.md`):** all per-iteration artifacts live under `.clodex/runs/<branch-slug>/`. The branch slug is the current `state.branch` with any `/` characters replaced by `--` (so `clodex/fix-draft-resume-500-20260516-1430` becomes `clodex--fix-draft-resume-500-20260516-1430`). One subdirectory per branch; `--continue` on the same branch appends to the same directory; a fresh branch gets a fresh subdirectory. Prior runs' files are preserved.
 
 ```
 .clodex/
@@ -78,26 +78,77 @@ Every large artifact produced during the run lives on disk. Only path references
     └── <branch-slug>/                              # per-branch namespace
         ├── iter-001-focus.md                       # input: focus text sent to codex
         ├── iter-001-codex.json                     # output: raw codex result JSON
-        ├── iter-001-fix.md                         # findings-fixer return summary
+        ├── iter-001-review.md                      # output: human-readable rendering of codex.json
+        ├── iter-001-fix.md                         # action: findings-fixer return summary (only when dispatched)
         ├── iter-002-focus.md
         ├── iter-002-codex.json
+        ├── iter-002-review.md
         ├── iter-002-fix.md
         └── ...
 ```
 
-**Per-iteration filenames are exactly these three, no others.** Iteration numbers are **zero-padded to 3 digits** (`iter-001`, not `iter-1`). Extensions are semantic: `.json` for JSON content, `.md` for markdown. **No `.txt`, no `-findings.md` companion file, no per-iteration variants.** If you find yourself naming a file `iter-3-codex-findings.md` or `iter-2-codex.txt`, you are off-spec — re-read this section.
+**Per-iteration filenames are exactly these four canonical names, no others.** `focus.md`, `codex.json`, and `review.md` are written every iteration. `fix.md` is written only when the findings-fixer was dispatched (verdict = `needs-attention` with blocking findings). Iteration numbers are **zero-padded to 3 digits** (`iter-001`, not `iter-1`). Extensions are semantic: `.json` for JSON content, `.md` for markdown. **No `.txt`, no `-findings.md` companion file, no per-iteration variants.** If you find yourself naming a file `iter-3-codex-findings.md` or `iter-2-codex.txt`, you are off-spec — re-read this section.
 
 | Artifact | Canonical path | Written by | What may appear in chat |
 |---|---|---|---|
-| Codex JSON output (full) | `.clodex/runs/<branch-slug>/iter-NNN-codex.json` | Orchestrator Phase 4d (`node "$COMPANION_SCRIPT" result <job-id> --json > <path>`) | Path string + one-line surface summary (`[clodex iter <N>/<max>] verdict=… | Cc/Hh/Mm/Ll | "…"`) |
 | Focus text sent to codex | `.clodex/runs/<branch-slug>/iter-NNN-focus.md` | Orchestrator Phase 4b (write the focus-runner's return value before launching codex) | Path string only |
-| Findings-fixer return summary | `.clodex/runs/<branch-slug>/iter-NNN-fix.md` | Orchestrator Phase 4f (write the structured summary the agent returned) | Path string + one-line "fix: <commit-sha> closed <N> findings" |
+| Codex JSON output (full) | `.clodex/runs/<branch-slug>/iter-NNN-codex.json` | Orchestrator Phase 4d (`node "$COMPANION_SCRIPT" result <job-id> --json > <path>`) | Path string + one-line surface summary (`[clodex iter <N>/<max>] verdict=… | Cc/Hh/Mm/Ll | "…"`) |
+| Codex review rendering (human-readable) | `.clodex/runs/<branch-slug>/iter-NNN-review.md` | Orchestrator Phase 4d (render the codex.json into markdown per the "Review rendering" template below) | Path string only |
+| Findings-fixer return summary | `.clodex/runs/<branch-slug>/iter-NNN-fix.md` | Orchestrator Phase 4f (write the structured summary the agent returned) — only when findings-fixer was dispatched | Path string + one-line "fix: <commit-sha> closed <N> findings" |
 | Plan markdown | `<plan_file>` from Phase 1 (outside `.clodex/`) | `superpowers:writing-plans` | Path string only |
 | State | `.clodex/state.json` | Orchestrator throughout | Specific fields read as needed; never whole file inline |
 
+### Review rendering template (v0.2.6 — iter-NNN-review.md)
+
+Write this file immediately after `iter-NNN-codex.json` in Phase 4d. The content is a markdown rendering of the codex JSON's verdict, summary, findings, and next_steps. Template:
+
+````markdown
+# iter-NNN — codex adversarial review
+
+**Verdict:** <verdict>
+**Counts:** <C> critical · <H> high · <M> medium · <L> low
+**Threshold:** <threshold> (<blocking_count> blocking findings strictly above ceiling, or "no blocking findings")
+**Job ID:** <job_id>
+**Elapsed:** <elapsed from codex.json or status snapshot>
+
+## Summary
+
+<codex.summary verbatim>
+
+## Findings
+
+<if no findings:>
+_None — codex returned `approve`._
+<else for each finding in codex.findings, severity-sorted critical → high → medium → low:>
+### [<severity>] <title>
+**File:** `<file>:<line_start>-<line_end>` (or just `<file>:<line_start>` if same)
+**Confidence:** <confidence>
+
+<body verbatim>
+
+**Recommendation:** <recommendation verbatim>
+
+---
+<end for>
+
+## Next steps (from codex)
+
+<for each item in codex.next_steps:>
+- <item verbatim>
+<end for>
+
+<if findings-fixer was dispatched after this review (verdict = needs-attention with blocking findings):>
+## Action
+
+Findings-fixer dispatched — see [`iter-NNN-fix.md`](iter-NNN-fix.md) for triage and commit details.
+<end if>
+````
+
+Do not editorialize the codex content — verdict, summary, finding bodies, recommendations, and next_steps are reproduced verbatim from `codex.json`. Severity badges, file:line formatting, and section headers are clodex's renderings to make the file scannable.
+
 **Directory creation:** before writing the first per-iteration file in any iteration, ensure the run directory exists: `mkdir -p .clodex/runs/<branch-slug>` (PowerShell: `New-Item -ItemType Directory -Force -Path .clodex/runs/<branch-slug> | Out-Null`). Idempotent — safe to run every iteration.
 
-**Legacy files (pre-v0.2.5):** the prior flat scheme `.clodex/iter-<N>-*.{txt,md,json}` is deprecated. Do not write new files under the flat scheme. Existing legacy files from prior runs are left in place as forensic artifacts — surface them in the Phase 5 report's "Pre-existing artifacts" line if any are found at the top level of `.clodex/` matching `iter-*`. Do not auto-delete or auto-migrate them.
+**Legacy files (pre-v0.2.6):** the prior flat scheme `.clodex/iter-<N>-*.{txt,md,json}` is deprecated. Do not write new files under the flat scheme. Existing legacy files from prior runs are left in place as forensic artifacts — surface them in the Phase 5 report's "Pre-existing artifacts" line if any are found at the top level of `.clodex/` matching `iter-*`. Do not auto-delete or auto-migrate them.
 
 When dispatching subagents, pass paths in the prompt rather than embedding content. The findings-fixer agent reads `codex_output_path` from disk — do NOT paste the codex JSON into the agent's prompt.
 
@@ -154,7 +205,7 @@ Raw input is in `$ARGUMENTS`. Parse in this order:
    Both branches below MUST use the Bash tool to produce the text. Do NOT generate the help/version output from your own context — `cat`/`printf` output is what gets shown. This guards against the VS Code Claude Code extension's tendency to paraphrase verbose markdown blocks (the terminal CLI emits verbatim correctly; the extension does not).
 
    - **`--version` / `-v` / `-V`** anywhere in `$ARGUMENTS`:
-     Run exactly: `Bash(command: 'printf "clodex@lukas-local v0.2.5\n"', description: "Print clodex version")`. The tool output is the user-visible response. Emit it as-is — no preamble, no commentary, no surrounding markdown. Then STOP.
+     Run exactly: `Bash(command: 'printf "clodex@lukas-local v0.2.6\n"', description: "Print clodex version")`. The tool output is the user-visible response. Emit it as-is — no preamble, no commentary, no surrounding markdown. Then STOP.
 
    - **`--help` / `--about` / `-h`** anywhere in `$ARGUMENTS`:
      1. Resolve the HELP.md path. The plugin install path is at `${CLAUDE_PLUGIN_ROOT}` when set; the help file is at `${CLAUDE_PLUGIN_ROOT}/skills/clodex/HELP.md`. If `$CLAUDE_PLUGIN_ROOT` is unset, fall back to `Glob: ~/.claude/plugins/**/clodex/skills/clodex/HELP.md` and pick the first match (there should be exactly one).
@@ -191,12 +242,12 @@ Severity ranks: `critical=4, high=3, medium=2, low=1`. Threshold ranks add `appr
 
 ## Help / About output
 
-**Canonical source as of v0.2.5:** `skills/clodex/HELP.md` in this plugin. The `--help` short-circuit in parse step 0 above MUST `cat` that file via Bash; do not render this fallback block from your own context.
+**Canonical source as of v0.2.6:** `skills/clodex/HELP.md` in this plugin. The `--help` short-circuit in parse step 0 above MUST `cat` that file via Bash; do not render this fallback block from your own context.
 
 The block reproduced below mirrors HELP.md and exists as a SKILL-internal reference (so reviewers reading SKILL.md can see what users get) and as a fallback if HELP.md is somehow missing. When parse step 0 cannot resolve HELP.md (Glob returns no match), emit the following markdown block verbatim to the user and STOP. Do NOT prepend chatter ("Here's the help…"), do NOT append commentary. Keep HELP.md and this block in sync on every edit.
 
 ````markdown
-`clodex@lukas-local` **v0.2.5** — externalized hard rules to `HARD_RULES.md`, read fresh each run (resilient to stale SKILL.md sessions)
+`clodex@lukas-local` **v0.2.6** — per-iteration `iter-NNN-review.md` (human-readable rendering of codex.json)
 
 ## /clodex — Autonomous Plan → Ship → Review → Fix Loop
 
@@ -342,7 +393,7 @@ After Phase 1 (and after every later phase that changes state), write `.clodex/s
 }
 ```
 
-`findings_history[i]` records iteration `i`'s codex output (compact): `{ iteration, job_id, verdict, summary, counts: {critical, high, medium, low}, blocking_count, committed_fix_sha, review_method, focus_path, codex_json_path, fix_path }`. The three `*_path` fields point at the canonical per-iteration files under `.clodex/runs/<branch-slug>/` (see "Persist artifacts to disk" in Context budget discipline).
+`findings_history[i]` records iteration `i`'s codex output (compact): `{ iteration, job_id, verdict, summary, counts: {critical, high, medium, low}, blocking_count, committed_fix_sha, review_method, focus_path, codex_json_path, review_path, fix_path }`. The four `*_path` fields point at the canonical per-iteration files under `.clodex/runs/<branch-slug>/` (see "Persist artifacts to disk" in Context budget discipline). `fix_path` is `null` when no findings-fixer was dispatched (verdict was `approve` or `threshold-satisfied`); the other three paths are always populated.
 
 `review_method` is required (see "State file: per-iteration `review_method`" in Phase 4c).
 
@@ -367,7 +418,7 @@ Create `.clodex/` if it doesn't exist. Add `.clodex/` to `.gitignore` if not alr
 **Before the first pre-flight tool call,** emit a single banner line to chat so the user can verify which plugin version is active without reading the help block:
 
 ```
-[clodex v0.2.5] starting <run-type>: <task description, truncated to 80 chars>
+[clodex v0.2.6] starting <run-type>: <task description, truncated to 80 chars>
 ```
 
 `<run-type>` is one of `new task`, `--resume`, `--continue`. For `--resume` / `--continue`, the task description comes from `state.json`. Update this version string whenever the plugin version bumps — it's the user's only quick verification that the new version actually loaded.
@@ -376,7 +427,7 @@ Create `.clodex/` if it doesn't exist. Add `.clodex/` to `.gitignore` if not alr
 
 1. Resolve `<plugin>` via `Glob ~/.claude/plugins/**/clodex/skills/clodex/HARD_RULES.md` (pick the first/only match).
 2. Run `Bash(command: 'cat "<resolved-path>"', description: "Read fresh hard rules")` and treat its stdout as the authoritative hard-rules text for this run (see "Hard rules — NEVER violate these" section above). If the rules in your loaded SKILL.md context conflict with this fresh read, the fresh read wins — your loaded SKILL.md may be stale.
-3. Append the HARD_RULES.md version line (last line of the file) to the banner: `[clodex v0.2.5 / hard-rules v0.2.5] starting ...` (re-emit the banner with both versions; this lets the user spot the case where SKILL.md and HARD_RULES.md are out of sync).
+3. Append the HARD_RULES.md version line (last line of the file) to the banner: `[clodex v0.2.6 / hard-rules v0.2.5] starting ...` (re-emit the banner with both versions; this lets the user spot the case where SKILL.md and HARD_RULES.md are out of sync. Plugin version (v0.2.6) and hard-rules version (v0.2.5) can legitimately differ — they're bumped independently. Plugin version bumps whenever any file changes; hard-rules version bumps only when the rules themselves change.).
 
 Then run these in parallel:
 
@@ -630,7 +681,11 @@ Persist the full result JSON to `.clodex/runs/<branch-slug>/iter-<padded-N>-code
 node "$COMPANION_SCRIPT" result <job-id> --json > .clodex/runs/<branch-slug>/iter-<padded-N>-codex.json
 ```
 
-(`<padded-N>` is zero-padded to 3 digits — `001`, `002`, etc. `<branch-slug>` is the current branch with `/` → `--`.) Append a compact entry to `findings_history` in state, including this path as `codex_json_path`.
+(`<padded-N>` is zero-padded to 3 digits — `001`, `002`, etc. `<branch-slug>` is the current branch with `/` → `--`.)
+
+**Then, in the same Phase 4d step, render the codex JSON to a human-readable `iter-<padded-N>-review.md` per the "Review rendering template" above.** Read the codex JSON, transform per template, Write to the canonical path. Do not skip this step on `approve` verdicts — the rendering exists so the user can navigate the runs/ directory and read what happened in each iteration without needing to `jq` the JSON. (See "Persist artifacts to disk; pass paths in chat" for the full file layout rationale.)
+
+Append a compact entry to `findings_history` in state, including the paths as `codex_json_path` and `review_path`.
 
 ### 4e. Decide
 
