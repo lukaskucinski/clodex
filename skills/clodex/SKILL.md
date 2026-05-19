@@ -207,17 +207,21 @@ Most context bloat in v0.1 came from improvisation that the hard rules now preve
 
 Raw input is in `$ARGUMENTS`. Parse in this order:
 
-0. **Help / version short-circuit — emit via Bash, do not paraphrase.**
+0. **Help / version short-circuit — handled at the slash-command level (v0.2.9+), this block is the FALLBACK.**
+
+   As of v0.2.9, `--version` / `-v` / `-V` and `--help` / `--about` / `-h` are handled directly in `commands/clodex.md` BEFORE the clodex skill is invoked. Slash command bodies are re-read from disk per invocation, so meta-flag handling there is bullet-proof across upgrades (a long-running session whose SKILL.md is cached pre-v0.2.2 still sees the current version because commands/clodex.md is fresh). The skill should normally NEVER receive `$ARGUMENTS` containing these flags.
+
+   This block remains as a fallback for two cases: (a) someone invokes the `clodex` skill directly (without going through `/clodex`), or (b) a future commands/clodex.md regression removes the command-level short-circuit. If you reach this skill with --version/--help in $ARGUMENTS, the command-level path failed; handle it here defensively but ALSO surface a one-line warning to the user noting that the command-level short-circuit did not fire as expected.
 
    Both branches below MUST use the Bash tool to produce the text. Do NOT generate the help/version output from your own context — `cat`/`printf` output is what gets shown. This guards against the VS Code Claude Code extension's tendency to paraphrase verbose markdown blocks (the terminal CLI emits verbatim correctly; the extension does not).
 
    - **`--version` / `-v` / `-V`** anywhere in `$ARGUMENTS`:
-     Run exactly: `Bash(command: 'printf "clodex@lukas-local v0.2.8\n"', description: "Print clodex version")`. The tool output is the user-visible response. Emit it as-is — no preamble, no commentary, no surrounding markdown. Then STOP.
+     Run exactly: `Bash(command: 'printf "clodex@lukas-local v0.2.9 (skill fallback path — commands/clodex.md should have caught this)\n"', description: "Print clodex version (fallback)")`. The tool output is the user-visible response. Emit it as-is — no preamble, no commentary, no surrounding markdown. Then STOP.
 
    - **`--help` / `--about` / `-h`** anywhere in `$ARGUMENTS`:
      1. Resolve the HELP.md path. The plugin install path is at `${CLAUDE_PLUGIN_ROOT}` when set; the help file is at `${CLAUDE_PLUGIN_ROOT}/skills/clodex/HELP.md`. If `$CLAUDE_PLUGIN_ROOT` is unset, fall back to `Glob: ~/.claude/plugins/**/clodex/skills/clodex/HELP.md` and pick the first match (there should be exactly one).
-     2. Run `Bash(command: 'cat "<resolved-path>"', description: "Print clodex help")` — Bash's stdout is the user-visible response.
-     3. **Do not transform, summarize, paraphrase, re-wrap, or rewrite the cat output in any way.** If the user sees anything other than the literal HELP.md contents, you violated this instruction. The HELP.md file is the canonical reference; SKILL.md merely renders it. Bump v-string in HELP.md when the plugin version bumps; the version string elsewhere in this file (e.g. the `--version` printf above) must stay in sync.
+     2. Run `Bash(command: 'cat "<resolved-path>"', description: "Print clodex help (fallback)")` — Bash's stdout is the user-visible response.
+     3. **Do not transform, summarize, paraphrase, re-wrap, or rewrite the cat output in any way.** If the user sees anything other than the literal HELP.md contents, you violated this instruction. The HELP.md file is the canonical reference; SKILL.md merely renders it. Bump v-string in HELP.md when the plugin version bumps; the version strings in commands/clodex.md and the printf above must stay in sync.
      4. STOP. Do not run pre-flight checks, do not read state, do not start any phase.
 
    This short-circuit is a pure documentation/version lookup and must complete in 1–2 tool calls (Bash, optionally a Glob if `$CLAUDE_PLUGIN_ROOT` is unset). If you find yourself reading state, dispatching agents, or generating the help block from memory, you are off-spec — re-read this section.
@@ -249,12 +253,12 @@ Severity ranks: `critical=4, high=3, medium=2, low=1`. Threshold ranks add `appr
 
 ## Help / About output
 
-**Canonical source as of v0.2.8:** `skills/clodex/HELP.md` in this plugin. The `--help` short-circuit in parse step 0 above MUST `cat` that file via Bash; do not render this fallback block from your own context.
+**Canonical source as of v0.2.9:** `skills/clodex/HELP.md` in this plugin. The `--help` short-circuit in parse step 0 above MUST `cat` that file via Bash; do not render this fallback block from your own context.
 
 The block reproduced below mirrors HELP.md and exists as a SKILL-internal reference (so reviewers reading SKILL.md can see what users get) and as a fallback if HELP.md is somehow missing. When parse step 0 cannot resolve HELP.md (Glob returns no match), emit the following markdown block verbatim to the user and STOP. Do NOT prepend chatter ("Here's the help…"), do NOT append commentary. Keep HELP.md and this block in sync on every edit.
 
 ````markdown
-`clodex@lukas-local` **v0.2.8** — pre-flight broker wedge detection + auto-recovery (kill broker PID, retry stalled iteration once before escalating)
+`clodex@lukas-local` **v0.2.9** — meta-flag resilience: --version and --help handled in commands/clodex.md (re-read fresh per invocation) so they survive session-cache staleness across upgrades
 
 ## /clodex — Autonomous Plan → Ship → Review → Fix Loop
 
@@ -427,7 +431,7 @@ Create `.clodex/` if it doesn't exist. Add `.clodex/` to `.gitignore` if not alr
 **Before the first pre-flight tool call,** emit a single banner line to chat so the user can verify which plugin version is active without reading the help block:
 
 ```
-[clodex v0.2.8] starting <run-type>: <task description, truncated to 80 chars>
+[clodex v0.2.9] starting <run-type>: <task description, truncated to 80 chars>
 ```
 
 `<run-type>` is one of `new task`, `--resume`, `--continue`. For `--resume` / `--continue`, the task description comes from `state.json`. Update this version string whenever the plugin version bumps — it's the user's only quick verification that the new version actually loaded.
@@ -436,7 +440,7 @@ Create `.clodex/` if it doesn't exist. Add `.clodex/` to `.gitignore` if not alr
 
 1. Resolve `<plugin>` via `Glob ~/.claude/plugins/**/clodex/skills/clodex/HARD_RULES.md` (pick the first/only match).
 2. Run `Bash(command: 'cat "<resolved-path>"', description: "Read fresh hard rules")` and treat its stdout as the authoritative hard-rules text for this run (see "Hard rules — NEVER violate these" section above). If the rules in your loaded SKILL.md context conflict with this fresh read, the fresh read wins — your loaded SKILL.md may be stale.
-3. Append the HARD_RULES.md version line (last line of the file) to the banner: `[clodex v0.2.8 / hard-rules v0.2.6] starting ...` (re-emit the banner with both versions; this lets the user spot the case where SKILL.md and HARD_RULES.md are out of sync. Plugin version (v0.2.8) and hard-rules version (v0.2.6) can legitimately differ — they're bumped independently. Plugin version bumps whenever any file changes; hard-rules version bumps only when the rules themselves change. v0.2.6 of hard-rules adds the broker-kill exception under Rule 2.).
+3. Append the HARD_RULES.md version line (last line of the file) to the banner: `[clodex v0.2.9 / hard-rules v0.2.6] starting ...` (re-emit the banner with both versions; this lets the user spot the case where SKILL.md and HARD_RULES.md are out of sync. Plugin version (v0.2.9) and hard-rules version (v0.2.6) can legitimately differ — they're bumped independently. Plugin version bumps whenever any file changes; hard-rules version bumps only when the rules themselves change. v0.2.6 of hard-rules adds the broker-kill exception under Rule 2.).
 
 Then run these in parallel:
 

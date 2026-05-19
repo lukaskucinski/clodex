@@ -1,4 +1,4 @@
-`clodex@lukas-local` **v0.2.8** — automated broker wedge detection + recovery (pre-flight kills wedged broker; mid-iteration stall auto-retries once before escalating)
+`clodex@lukas-local` **v0.2.9** — meta-flag resilience: `--version` and `--help` handled in commands/clodex.md (re-read fresh per invocation) so they always reflect the currently-installed plugin version, even in long-running sessions with stale SKILL.md
 
 ## /clodex — Autonomous Plan → Ship → Review → Fix Loop
 

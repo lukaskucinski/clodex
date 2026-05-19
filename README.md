@@ -4,7 +4,7 @@ Autonomous development loop for Claude Code: plan → implement → ship a PR �
 
 A ralph-loop variant tuned for the specific workflow of "Claude builds, codex reviews, Claude fixes, codex re-reviews." Composes existing skills (`superpowers:brainstorming`, `superpowers:writing-plans`, `superpowers:executing-plans`, `forge`, `ship`, `codex-focus`) and the codex plugin's `codex-companion.mjs` script rather than reimplementing them.
 
-**Status:** v0.2.8 (paired with HARD_RULES.md v0.2.6). v0.2.8 adds automated codex-companion broker wedge detection and recovery — when a stale running job is detected at pre-flight (or when the v0.2.7 stall detection trips mid-iteration), clodex kills the broker PID so that codex-companion's `ensureBrokerSession` spawns a fresh runtime on the next call, then retries the stalled iteration once before escalating. HARD_RULES.md v0.2.6 carves out the sanctioned broker-kill exception under Rule 2. v0.2.7 added per-iteration `iter-NNN-stalled.md` breadcrumbs + sharper stall detection (~3 min). v0.2.1 adapts to codex plugin v1.0.4's `disable-model-invocation` policy (see "Codex plugin v1.0.4 compatibility (v0.2.1)" below); v0.2 was motivated by a v0.1 failure on a larger PR — see "Lessons from PR #78" below.
+**Status:** v0.2.9 (paired with HARD_RULES.md v0.2.6). v0.2.9 lifts `--version` and `--help` handling out of SKILL.md into commands/clodex.md so they always reflect the currently-installed plugin version, even in long-running Claude Code sessions whose SKILL.md cache predates the install (slash command bodies are re-read fresh per invocation; skill content is cached at session start). v0.2.8 added automated codex-companion broker wedge detection and recovery — pre-flight + mid-iteration. HARD_RULES.md v0.2.6 carves out the sanctioned broker-kill exception under Rule 2. v0.2.7 added per-iteration `iter-NNN-stalled.md` breadcrumbs + sharper stall detection (~3 min). v0.2.1 adapts to codex plugin v1.0.4's `disable-model-invocation` policy (see "Codex plugin v1.0.4 compatibility (v0.2.1)" below); v0.2 was motivated by a v0.1 failure on a larger PR — see "Lessons from PR #78" below.
 
 ## Why
 
@@ -38,7 +38,7 @@ cat > ~/clodex-marketplace/.claude-plugin/marketplace.json <<'EOF'
   "description": "Clodex plugin via GitHub clone",
   "owner": { "name": "you" },
   "plugins": [
-    { "name": "clodex", "source": "../clodex", "version": "0.2.8", "category": "workflow" }
+    { "name": "clodex", "source": "../clodex", "version": "0.2.9", "category": "workflow" }
   ]
 }
 EOF
@@ -322,7 +322,7 @@ v0.2 hardens against all four failures: the hard rules in SKILL.md make each of 
 ```
 clodex/
 ├── .claude-plugin/
-│   └── plugin.json            # plugin manifest (version 0.2.8)
+│   └── plugin.json            # plugin manifest (version 0.2.9)
 ├── skills/
 │   └── clodex/
 │       └── SKILL.md           # orchestration playbook (the main agent reads this)

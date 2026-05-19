@@ -49,10 +49,42 @@ argument-hint: "<task description> [think|think hard|think harder|ultrathink] [-
 allowed-tools: Skill, TaskCreate, TaskUpdate, TaskList, TaskGet, Read, Write, Edit, Glob, Grep, Bash, Agent
 ---
 
-Invoke the `clodex` skill with the following arguments: `$ARGUMENTS`
+# /clodex entry point (v0.2.9 — meta-flag handling lifted from SKILL.md to here)
 
-If `$ARGUMENTS` contains `--help`, `--about`, or `-h`, the skill emits the verbatim help/about block and stops — no pre-flight, no state read, no run. Otherwise, follow the full playbook phase-by-phase, dispatching the `clodex-focus-runner` and `clodex-findings-fixer` subagents at Phase 4a and 4f. Maintain `.clodex/state.json` throughout so the run is resumable via `/clodex --resume` (interrupted run) or extensible via `/clodex --continue` (finished or stalled run).
+Process `$ARGUMENTS` in this order, taking the FIRST applicable branch. Branches 1 and 2 are handled directly at this slash-command level (never invoke the clodex skill for them) so they always reflect the currently-installed plugin version, even in long-running Claude Code sessions whose SKILL.md cache predates the relevant flag. Slash command bodies are re-read from disk per invocation; skill content is cached at session start.
 
-The skill defines four hard rules (codex-only review pass, no plugin-state writes, mandatory focus-runner dispatch, halt-and-surface over improvise). Read them at the start of the run and treat as inviolable.
+## 1. Version short-circuit (handled here, never delegated to the skill)
+
+If `$ARGUMENTS` contains any of `--version`, `-v`, or `-V` as a whole token (anywhere in the args, any order), do EXACTLY this and stop:
+
+```
+Bash(command: 'printf "clodex@lukas-local v0.2.9\n"', description: "Print clodex version")
+```
+
+The Bash tool's stdout is the user-visible response. Emit it as-is, with no preamble, no commentary, no surrounding markdown. Do NOT invoke the `clodex` skill. Do NOT add explanatory text. Stop after the Bash output appears.
+
+If multiple meta-flags are present (e.g. `--help --version`), version wins — it's the cheapest to emit and the user almost certainly wants the version.
+
+**Why this lives here, not in SKILL.md:** Claude Code re-reads commands/*.md per slash command invocation, but SKILL.md is loaded once at session start and cached. Putting --version handling in the skill means a session that started before --version was added (pre-v0.2.2) would not recognize the flag. Putting it here makes the version flag bullet-proof across upgrades, even for long-running VS Code Claude Code panels.
+
+## 2. Help short-circuit (handled here, never delegated to the skill)
+
+If `$ARGUMENTS` contains any of `--help`, `--about`, or `-h` as a whole token (and no version flag — that case is handled by branch 1), do EXACTLY this and stop:
+
+1. Resolve the HELP.md path. If `$CLAUDE_PLUGIN_ROOT` is set, the path is `${CLAUDE_PLUGIN_ROOT}/skills/clodex/HELP.md`. Otherwise resolve via `Glob ~/.claude/plugins/**/clodex/skills/clodex/HELP.md` and pick the first match (there should be exactly one).
+2. Run `Bash(command: 'cat "<resolved-path>"', description: "Print clodex help")`.
+3. The Bash tool's stdout is the user-visible response. Do NOT transform, summarize, paraphrase, re-wrap, or rewrite. The HELP.md file is the canonical reference.
+
+Do NOT invoke the `clodex` skill. Stop after the cat output appears.
+
+**Same rationale as branch 1:** this lives here so the help block always reflects the currently-installed HELP.md, even when SKILL.md's loaded content is stale.
+
+## 3. Default: invoke the clodex skill with $ARGUMENTS
+
+For any other arguments (or no arguments — the skill will prompt for a task), invoke the `clodex` skill via the `Skill` tool, passing `$ARGUMENTS` verbatim.
+
+The skill defines four hard rules (codex-only review pass, no plugin-state writes with v0.2.6 broker-kill exception, mandatory focus-runner dispatch, halt-and-surface over improvise). The skill reads them fresh from HARD_RULES.md at the start of every run.
 
 Do not auto-merge the PR. End with a Phase 5 report that surfaces continuation commands the user can copy-paste if they want more iterations.
+
+Maintain `.clodex/state.json` throughout so the run is resumable via `/clodex --resume` (interrupted run) or extensible via `/clodex --continue` (finished or stalled run).
