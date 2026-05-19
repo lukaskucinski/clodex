@@ -29,7 +29,7 @@ You are running clodex. Your job: drive a task from initial description to a cod
 
 ## Hard rules — NEVER violate these
 
-**Authoritative source as of v0.2.6: `skills/clodex/HARD_RULES.md` in this plugin.** At the start of every run, **before any other work** (and immediately after the version banner in pre-flight), run `Bash(cat <plugin>/skills/clodex/HARD_RULES.md)` and treat its output as the authoritative hard-rules text — even if it conflicts with the rules reproduced below. Your loaded SKILL.md may be stale (Claude Code agent sessions cache skill content at session-start; `/reload-plugins` does not re-inject it), so a fresh read from disk is required.
+**Authoritative source since v0.2.5: `skills/clodex/HARD_RULES.md` in this plugin.** At the start of every run, **before any other work** (and immediately after the version banner in pre-flight), run `Bash(cat <plugin>/skills/clodex/HARD_RULES.md)` and treat its output as the authoritative hard-rules text — even if it conflicts with the rules reproduced below. Your loaded SKILL.md may be stale (Claude Code agent sessions cache skill content at session-start; `/reload-plugins` does not re-inject it), so a fresh read from disk is required.
 
 The rules reproduced below mirror HARD_RULES.md and exist for reviewers reading SKILL.md. **If HARD_RULES.md is missing or unreadable, halt and surface** — do not fall back to these inlined rules silently, since "no fresh hard-rules read" is itself a structural problem the user should know about.
 
@@ -68,7 +68,7 @@ Follow these rules to keep the orchestrator's context lean enough that long runs
 
 Every large artifact produced during the run lives on disk. Only path references and short summaries flow through the orchestrator's chat context.
 
-**Canonical file layout (v0.2.6 — adds `iter-NNN-review.md`):** all per-iteration artifacts live under `.clodex/runs/<branch-slug>/`. The branch slug is the current `state.branch` with any `/` characters replaced by `--` (so `clodex/fix-draft-resume-500-20260516-1430` becomes `clodex--fix-draft-resume-500-20260516-1430`). One subdirectory per branch; `--continue` on the same branch appends to the same directory; a fresh branch gets a fresh subdirectory. Prior runs' files are preserved.
+**Canonical file layout (v0.2.7 — adds `iter-NNN-stalled.md` for stalled/error iterations):** all per-iteration artifacts live under `.clodex/runs/<branch-slug>/`. The branch slug is the current `state.branch` with any `/` characters replaced by `--` (so `clodex/fix-draft-resume-500-20260516-1430` becomes `clodex--fix-draft-resume-500-20260516-1430`). One subdirectory per branch; `--continue` on the same branch appends to the same directory; a fresh branch gets a fresh subdirectory. Prior runs' files are preserved.
 
 ```
 .clodex/
@@ -76,10 +76,11 @@ Every large artifact produced during the run lives on disk. Only path references
 ├── .gitignore                                      # auto-created
 └── runs/
     └── <branch-slug>/                              # per-branch namespace
-        ├── iter-001-focus.md                       # input: focus text sent to codex
-        ├── iter-001-codex.json                     # output: raw codex result JSON
-        ├── iter-001-review.md                      # output: human-readable rendering of codex.json
-        ├── iter-001-fix.md                         # action: findings-fixer return summary (only when dispatched)
+        ├── iter-001-focus.md                       # always: focus text sent to codex
+        ├── iter-001-codex.json                     # when verdict reached: raw codex result JSON
+        ├── iter-001-review.md                      # when verdict reached: human-readable rendering of codex.json
+        ├── iter-001-fix.md                         # when findings-fixer dispatched: triage + commit summary
+        ├── iter-001-stalled.md                     # when verdict in {stalled, error, codex-reproducible-hang}: diagnostic breadcrumb
         ├── iter-002-focus.md
         ├── iter-002-codex.json
         ├── iter-002-review.md
@@ -87,7 +88,9 @@ Every large artifact produced during the run lives on disk. Only path references
         └── ...
 ```
 
-**Per-iteration filenames are exactly these four canonical names, no others.** `focus.md`, `codex.json`, and `review.md` are written every iteration. `fix.md` is written only when the findings-fixer was dispatched (verdict = `needs-attention` with blocking findings). Iteration numbers are **zero-padded to 3 digits** (`iter-001`, not `iter-1`). Extensions are semantic: `.json` for JSON content, `.md` for markdown. **No `.txt`, no `-findings.md` companion file, no per-iteration variants.** If you find yourself naming a file `iter-3-codex-findings.md` or `iter-2-codex.txt`, you are off-spec — re-read this section.
+**Per-iteration filenames are exactly these five canonical names, no others.** `focus.md` is written at the start of every iteration. On a successful review (codex returned JSON), `codex.json` + `review.md` are written. On `needs-attention` with blocking findings, the findings-fixer adds `fix.md`. On a halted iteration (`stalled`, `error`, or `codex-reproducible-hang`), `stalled.md` is written instead of `codex.json`+`review.md` — codex never produced output, so there's nothing to render, but the diagnostic breadcrumb captures *why* the iteration ended without a result. Iteration numbers are **zero-padded to 3 digits** (`iter-001`, not `iter-1`). Extensions are semantic: `.json` for JSON content, `.md` for markdown. **No `.txt`, no `-findings.md` companion file, no per-iteration variants.** If you find yourself naming a file `iter-3-codex-findings.md` or `iter-2-codex.txt`, you are off-spec — re-read this section.
+
+A given iteration always has `focus.md`, plus EITHER {`codex.json` + `review.md`, optionally `fix.md`} OR `stalled.md` — never both. The pairing is the disk-level signal of whether codex produced a verdict for that iteration.
 
 | Artifact | Canonical path | Written by | What may appear in chat |
 |---|---|---|---|
@@ -95,6 +98,7 @@ Every large artifact produced during the run lives on disk. Only path references
 | Codex JSON output (full) | `.clodex/runs/<branch-slug>/iter-NNN-codex.json` | Orchestrator Phase 4d (`node "$COMPANION_SCRIPT" result <job-id> --json > <path>`) | Path string + one-line surface summary (`[clodex iter <N>/<max>] verdict=… | Cc/Hh/Mm/Ll | "…"`) |
 | Codex review rendering (human-readable) | `.clodex/runs/<branch-slug>/iter-NNN-review.md` | Orchestrator Phase 4d (render the codex.json into markdown per the "Review rendering" template below) | Path string only |
 | Findings-fixer return summary | `.clodex/runs/<branch-slug>/iter-NNN-fix.md` | Orchestrator Phase 4f (write the structured summary the agent returned) — only when findings-fixer was dispatched | Path string + one-line "fix: <commit-sha> closed <N> findings" |
+| Stalled-iteration breadcrumb | `.clodex/runs/<branch-slug>/iter-NNN-stalled.md` | Orchestrator Stalled-handling step in Phase 4c — only when verdict transitions to `stalled`, `error`, or `codex-reproducible-hang` | Path string only |
 | Plan markdown | `<plan_file>` from Phase 1 (outside `.clodex/`) | `superpowers:writing-plans` | Path string only |
 | State | `.clodex/state.json` | Orchestrator throughout | Specific fields read as needed; never whole file inline |
 
@@ -148,7 +152,7 @@ Do not editorialize the codex content — verdict, summary, finding bodies, reco
 
 **Directory creation:** before writing the first per-iteration file in any iteration, ensure the run directory exists: `mkdir -p .clodex/runs/<branch-slug>` (PowerShell: `New-Item -ItemType Directory -Force -Path .clodex/runs/<branch-slug> | Out-Null`). Idempotent — safe to run every iteration.
 
-**Legacy files (pre-v0.2.6):** the prior flat scheme `.clodex/iter-<N>-*.{txt,md,json}` is deprecated. Do not write new files under the flat scheme. Existing legacy files from prior runs are left in place as forensic artifacts — surface them in the Phase 5 report's "Pre-existing artifacts" line if any are found at the top level of `.clodex/` matching `iter-*`. Do not auto-delete or auto-migrate them.
+**Legacy files (pre-v0.2.4):** the prior flat scheme `.clodex/iter-<N>-*.{txt,md,json}` is deprecated. Do not write new files under the flat scheme. Existing legacy files from prior runs are left in place as forensic artifacts — surface them in the Phase 5 report's "Pre-existing artifacts" line if any are found at the top level of `.clodex/` matching `iter-*`. Do not auto-delete or auto-migrate them.
 
 When dispatching subagents, pass paths in the prompt rather than embedding content. The findings-fixer agent reads `codex_output_path` from disk — do NOT paste the codex JSON into the agent's prompt.
 
@@ -205,7 +209,7 @@ Raw input is in `$ARGUMENTS`. Parse in this order:
    Both branches below MUST use the Bash tool to produce the text. Do NOT generate the help/version output from your own context — `cat`/`printf` output is what gets shown. This guards against the VS Code Claude Code extension's tendency to paraphrase verbose markdown blocks (the terminal CLI emits verbatim correctly; the extension does not).
 
    - **`--version` / `-v` / `-V`** anywhere in `$ARGUMENTS`:
-     Run exactly: `Bash(command: 'printf "clodex@lukas-local v0.2.6\n"', description: "Print clodex version")`. The tool output is the user-visible response. Emit it as-is — no preamble, no commentary, no surrounding markdown. Then STOP.
+     Run exactly: `Bash(command: 'printf "clodex@lukas-local v0.2.7\n"', description: "Print clodex version")`. The tool output is the user-visible response. Emit it as-is — no preamble, no commentary, no surrounding markdown. Then STOP.
 
    - **`--help` / `--about` / `-h`** anywhere in `$ARGUMENTS`:
      1. Resolve the HELP.md path. The plugin install path is at `${CLAUDE_PLUGIN_ROOT}` when set; the help file is at `${CLAUDE_PLUGIN_ROOT}/skills/clodex/HELP.md`. If `$CLAUDE_PLUGIN_ROOT` is unset, fall back to `Glob: ~/.claude/plugins/**/clodex/skills/clodex/HELP.md` and pick the first match (there should be exactly one).
@@ -242,12 +246,12 @@ Severity ranks: `critical=4, high=3, medium=2, low=1`. Threshold ranks add `appr
 
 ## Help / About output
 
-**Canonical source as of v0.2.6:** `skills/clodex/HELP.md` in this plugin. The `--help` short-circuit in parse step 0 above MUST `cat` that file via Bash; do not render this fallback block from your own context.
+**Canonical source as of v0.2.7:** `skills/clodex/HELP.md` in this plugin. The `--help` short-circuit in parse step 0 above MUST `cat` that file via Bash; do not render this fallback block from your own context.
 
 The block reproduced below mirrors HELP.md and exists as a SKILL-internal reference (so reviewers reading SKILL.md can see what users get) and as a fallback if HELP.md is somehow missing. When parse step 0 cannot resolve HELP.md (Glob returns no match), emit the following markdown block verbatim to the user and STOP. Do NOT prepend chatter ("Here's the help…"), do NOT append commentary. Keep HELP.md and this block in sync on every edit.
 
 ````markdown
-`clodex@lukas-local` **v0.2.6** — per-iteration `iter-NNN-review.md` (human-readable rendering of codex.json)
+`clodex@lukas-local` **v0.2.7** — stalled-iteration breadcrumb (`iter-NNN-stalled.md`) + sharper stall detection (~3 min instead of 10 min)
 
 ## /clodex — Autonomous Plan → Ship → Review → Fix Loop
 
@@ -393,7 +397,7 @@ After Phase 1 (and after every later phase that changes state), write `.clodex/s
 }
 ```
 
-`findings_history[i]` records iteration `i`'s codex output (compact): `{ iteration, job_id, verdict, summary, counts: {critical, high, medium, low}, blocking_count, committed_fix_sha, review_method, focus_path, codex_json_path, review_path, fix_path }`. The four `*_path` fields point at the canonical per-iteration files under `.clodex/runs/<branch-slug>/` (see "Persist artifacts to disk" in Context budget discipline). `fix_path` is `null` when no findings-fixer was dispatched (verdict was `approve` or `threshold-satisfied`); the other three paths are always populated.
+`findings_history[i]` records iteration `i`'s codex output (compact): `{ iteration, job_id, verdict, summary, counts: {critical, high, medium, low}, blocking_count, committed_fix_sha, review_method, focus_path, codex_json_path, review_path, fix_path, stalled_breadcrumb_path }`. The five `*_path` fields point at the canonical per-iteration files under `.clodex/runs/<branch-slug>/` (see "Persist artifacts to disk" in Context budget discipline). `focus_path` is always populated. `codex_json_path` + `review_path` are populated when codex produced a verdict (regardless of whether findings-fixer ran); they are `null` on stalled/error/hang. `fix_path` is `null` unless the findings-fixer was dispatched (verdict was `needs-attention` with blocking findings). `stalled_breadcrumb_path` is `null` unless the iteration ended with verdict in `{stalled, error, codex-reproducible-hang}`. The pairing `(codex_json_path != null) XOR (stalled_breadcrumb_path != null)` holds for every iteration that completed any way at all — if both are null, the orchestrator halted before launching codex (no useful state to inspect).
 
 `review_method` is required (see "State file: per-iteration `review_method`" in Phase 4c).
 
@@ -418,7 +422,7 @@ Create `.clodex/` if it doesn't exist. Add `.clodex/` to `.gitignore` if not alr
 **Before the first pre-flight tool call,** emit a single banner line to chat so the user can verify which plugin version is active without reading the help block:
 
 ```
-[clodex v0.2.6] starting <run-type>: <task description, truncated to 80 chars>
+[clodex v0.2.7] starting <run-type>: <task description, truncated to 80 chars>
 ```
 
 `<run-type>` is one of `new task`, `--resume`, `--continue`. For `--resume` / `--continue`, the task description comes from `state.json`. Update this version string whenever the plugin version bumps — it's the user's only quick verification that the new version actually loaded.
@@ -427,7 +431,7 @@ Create `.clodex/` if it doesn't exist. Add `.clodex/` to `.gitignore` if not alr
 
 1. Resolve `<plugin>` via `Glob ~/.claude/plugins/**/clodex/skills/clodex/HARD_RULES.md` (pick the first/only match).
 2. Run `Bash(command: 'cat "<resolved-path>"', description: "Read fresh hard rules")` and treat its stdout as the authoritative hard-rules text for this run (see "Hard rules — NEVER violate these" section above). If the rules in your loaded SKILL.md context conflict with this fresh read, the fresh read wins — your loaded SKILL.md may be stale.
-3. Append the HARD_RULES.md version line (last line of the file) to the banner: `[clodex v0.2.6 / hard-rules v0.2.5] starting ...` (re-emit the banner with both versions; this lets the user spot the case where SKILL.md and HARD_RULES.md are out of sync. Plugin version (v0.2.6) and hard-rules version (v0.2.5) can legitimately differ — they're bumped independently. Plugin version bumps whenever any file changes; hard-rules version bumps only when the rules themselves change.).
+3. Append the HARD_RULES.md version line (last line of the file) to the banner: `[clodex v0.2.7 / hard-rules v0.2.5] starting ...` (re-emit the banner with both versions; this lets the user spot the case where SKILL.md and HARD_RULES.md are out of sync. Plugin version (v0.2.7) and hard-rules version (v0.2.5) can legitimately differ — they're bumped independently. Plugin version bumps whenever any file changes; hard-rules version bumps only when the rules themselves change.).
 
 Then run these in parallel:
 
@@ -590,24 +594,86 @@ The output is a JSON array of all known jobs. Find the most-recent entry where `
 
 **If `node "$COMPANION_SCRIPT" adversarial-review …` errors immediately (non-zero exit before backgrounding), if `status --all --json` returns no matching job after a 2s retry, or if the recovered job's state is `error` / `failed`:** halt the loop, set `verdict='error'`, surface the error to the user. Do NOT fall back to the OpenAI `codex` CLI, do NOT dispatch a Claude subagent as a substitute, do NOT write to broker state to "fix" a stuck job. (See Hard rule 1.)
 
-### 4c. Wait for completion (active poll — do not trust notifications alone)
+### 4c. Wait for completion (smart background poll — v0.2.7 stall-aware)
 
-On this user's machine, adversarial-review completions historically take **2–4 minutes** (median ~2:30, longest observed ~4:10). The harness notification for the background bash process is unreliable under VS Code, so **actively poll** rather than wait passively. Schedule explicit status checks at concrete elapsed times.
+On this user's machine, adversarial-review completions historically take **2–4 minutes** (median ~2:30, longest observed ~4:10). The harness notification for the background bash process is unreliable under VS Code, so **actively poll** rather than wait passively. v0.2.7 replaces the discrete time-step polling with a single background poll loop that tracks two stall signals and exits early when both fire.
 
-Polling protocol (replace any reference to `/codex:status <job-id>` with the companion-script equivalent: `node "$COMPANION_SCRIPT" status <job-id>`):
+**Background poll loop (v0.2.7).** Run this as a single `Bash` call with `run_in_background: true` immediately after Phase 4b's status-recovery step (i.e. once you have `$JOB_ID` and the broker's `logFile` path captured). The loop exits with a distinct exit code per outcome so the orchestrator can branch on the result:
 
-| Elapsed | Action |
-|---|---|
-| t=0 | Codex launched (Phase 4b). Record start time. |
-| t≈120s | Sleep 120s (`Start-Sleep -Seconds 120` on PowerShell; `sleep 120` on bash), then run `node "$COMPANION_SCRIPT" status <job-id>`. ~Half of historical runs are done by now. |
-| t≈210s | If still running, sleep 90s, then re-check. |
-| t≈300s | If still running, sleep 90s, then re-check. Most runs finish here. |
-| t≈360s | If still running, **print a user-visible heartbeat**: `"[clodex iter N] codex still running at 6m — historical max was 4m10s, will keep checking every 90s up to 10m total"`. Sleep 90s, re-check. |
-| t≈450s | If still running, sleep 90s, re-check. |
-| t≈540s | If still running, sleep 60s, re-check. |
-| t≈600s | If still running after 10 min total, **halt this iteration** (see "Stalled handling" below). |
+```bash
+COMPANION_SCRIPT="<resolved-companion-path>"
+JOB_ID="<recovered-job-id>"
+LOG_FILE="<broker-reported-logFile-path>"     # from status --all --json -> running[0].logFile
+START=$(date +%s)
+MAX_SECS=600                                   # 10-min hard cap (unchanged from v0.2.6; backstop only — early stall detection fires first)
+STALL_DETECT_SECS=180                          # 3-min frozen window = stall
+POLL_INTERVAL=30                               # check every 30s
+HEARTBEAT_AT=360                               # print user-visible heartbeat at 6m
 
-Use a single short sleep per cycle (≤120s); never chain a long sleep, never use `ScheduleWakeup` (that's a `/loop`-mode tool, not a session-pacing primitive). The Bash tool's per-sleep block applies only to leading sleeps — a sleep followed by a status check is fine.
+PREV_STATUS_HASH=""
+PREV_LOG_MTIME=""
+FROZEN_SINCE=""
+HEARTBEAT_FIRED=0
+
+while true; do
+  NOW=$(date +%s); ELAPSED=$((NOW - START))
+  STATUS=$(node "$COMPANION_SCRIPT" status "$JOB_ID" 2>&1)
+  STATUS_HASH=$(printf "%s" "$STATUS" | md5sum | cut -d' ' -f1)
+  STATE=$(printf "%s" "$STATUS" | grep -E "^- $JOB_ID " | head -1 | awk -F'|' '{gsub(/^ +| +$/,"",$2); print $2}')
+  LOG_MTIME=$(stat -c '%Y' "$LOG_FILE" 2>/dev/null || echo "0")
+
+  # Heartbeat at 6m (one-shot)
+  if [ $HEARTBEAT_FIRED -eq 0 ] && [ $ELAPSED -ge $HEARTBEAT_AT ]; then
+    echo "[heartbeat] codex still running at $((ELAPSED / 60))m — historical max 4m10s, hard cap 10m, will detect stall at 3m of frozen progress"
+    HEARTBEAT_FIRED=1
+  fi
+
+  # Terminal state — let orchestrator fetch the result
+  if [ "$STATE" != "running" ] && [ "$STATE" != "queued" ]; then
+    echo "TERMINAL state=$STATE elapsed=${ELAPSED}s"
+    exit 0
+  fi
+
+  # Hard cap
+  if [ $ELAPSED -gt $MAX_SECS ]; then
+    echo "TIMEOUT elapsed=${ELAPSED}s state=$STATE last_status_hash=$STATUS_HASH last_log_mtime=$LOG_MTIME"
+    exit 2
+  fi
+
+  # Stall detection — require BOTH status and log to be frozen
+  if [ -n "$PREV_STATUS_HASH" ]; then
+    if [ "$STATUS_HASH" = "$PREV_STATUS_HASH" ] && [ "$LOG_MTIME" = "$PREV_LOG_MTIME" ]; then
+      if [ -z "$FROZEN_SINCE" ]; then FROZEN_SINCE=$NOW; fi
+      FROZEN_DURATION=$((NOW - FROZEN_SINCE))
+      if [ $FROZEN_DURATION -ge $STALL_DETECT_SECS ]; then
+        echo "STALL_DETECTED frozen_for=${FROZEN_DURATION}s elapsed=${ELAPSED}s last_status_hash=$STATUS_HASH last_log_mtime=$LOG_MTIME"
+        exit 3
+      fi
+    else
+      FROZEN_SINCE=""   # activity detected; reset
+    fi
+  fi
+
+  PREV_STATUS_HASH=$STATUS_HASH
+  PREV_LOG_MTIME=$LOG_MTIME
+  sleep $POLL_INTERVAL
+done
+```
+
+The orchestrator branches on the exit code (read via the background bash output once the loop terminates):
+
+| Exit code | Last echoed line | Orchestrator action |
+|---|---|---|
+| `0` | `TERMINAL state=<completed\|failed\|cancelled>` | Proceed to Phase 4d (fetch result). If `state=failed` or `cancelled`, treat as error and skip to Stalled handling. |
+| `2` | `TIMEOUT elapsed=…` | Stalled handling — codex never produced a verdict within the 10-min cap. |
+| `3` | `STALL_DETECTED frozen_for=…` | Stalled handling — codex's IPC and log both froze; cancel earlier than the hard cap. Surface the `last_status_hash` + `last_log_mtime` to the user in the breadcrumb. |
+| anything else | (unexpected) | Halt and surface — the poll loop itself errored. |
+
+**Why two signals, not one.** A single signal would false-positive: codex legitimately spends ~30–60s on a single long `Get-Content` invocation where neither the broker IPC nor the log advances. Requiring BOTH `progressPreview` (status hash) AND log mtime to be frozen for 3 consecutive minutes catches genuine deadlocks (the May 18 2026 IPC pipe wedge on PR #86 froze both signals at the same second) while permitting normal-but-slow progress.
+
+**Stall-detection wall-clock budget.** Historical runs typically poll once every 30s and complete in 2–4 min. A genuine stall trips the 3-min frozen-window threshold around the 3:00–3:30 elapsed mark — significantly earlier than the 10-min hard cap, which is now a backstop rather than the primary signal.
+
+Use a single short sleep per cycle (≤120s); never chain a long sleep, never use `ScheduleWakeup` (that's a `/loop`-mode tool, not a session-pacing primitive). Inside the `until`/`while` shell loop above, sleep + status check is fine — the harness's "no leading sleep" block does not apply.
 
 You may also check the background bash launched in Phase 4b via `BashOutput` periodically — if the node process has exited cleanly, the review JSON is in stdout and you can skip straight to Phase 4d. Either signal (broker `state=completed` or background bash exited) is sufficient to proceed.
 
@@ -619,17 +685,80 @@ Retry once: wait 60s, re-run `node "$COMPANION_SCRIPT" status <job-id>`. If the 
 
 Do this retry at most once per iteration. If you retried earlier this iteration and the new check errors again, halt immediately — repeated transient errors are no longer transient.
 
-#### Stalled handling (10-min cap or repeated errors)
+#### Stalled handling (10-min cap, early stall detection, or repeated errors)
 
-When you hit either the 10-min cap or repeated transient errors:
+When you hit any of: the 10-min cap (`TIMEOUT` from the poll loop), early stall detection (`STALL_DETECTED` from the poll loop), repeated transient `status` errors, or a terminal `failed`/`cancelled` state from the broker:
 
 1. Invoke `node "$COMPANION_SCRIPT" cancel <job-id>` once. Give it up to 30 seconds.
 2. Re-check `node "$COMPANION_SCRIPT" status <job-id>`. If the job is no longer running, good.
 3. If the job is STILL running after the cancel: surface to the user with the job ID, the elapsed time, and explicit copy-pasteable PowerShell to investigate. Do NOT attempt to kill the process directly, do NOT edit any plugin state file, do NOT touch `~/.claude/plugins/data/`. (See Hard rule 2.)
+
+   On Windows with Git Bash, `codex-companion`'s `taskkill /PID <pid> /T /F` fallback has been observed to fail because MSYS translates the `/PID` argument to `C:/Program Files/Git/PID`. When `cancel` stderr contains the literal `'C:/Program Files/Git/PID'` substring, the recovery command for the user is `Stop-Process -Id <pid> -Force` from PowerShell (NOT Git Bash). Include both the broker-reported PID and that exact command in the breadcrumb and Phase 5 report.
 4. Decide which verdict to set:
    - **`codex-reproducible-hang`** if this is the 2nd consecutive iteration where codex stalled at substantially the same phase (e.g., both iterations ran diff-exploration commands for ~1 min then went silent, never produced synthesis output). Check `state.findings_history` for the prior iteration's `verdict` — if it was `stalled` and the failure shape matches, escalate to `codex-reproducible-hang`. This is a stronger signal than a one-off stall: the diff itself is exceeding codex's synthesis budget on this machine, and more iterations on the same branch will hang the same way.
    - **`stalled`** if this is the first such failure or the failure shape differs from the prior iteration.
 5. Write `last_codex_job_id`, the per-iteration `review_method` (see "State file: per-iteration review_method"), and a Phase-5-equivalent stalled report.
+
+6. **Write the stalled-iteration breadcrumb** to `.clodex/runs/<branch-slug>/iter-<padded-N>-stalled.md`. This file is the disk-level record of *why* this iteration produced no `codex.json` or `review.md` — six months later, someone navigating the runs directory should be able to open it and immediately understand what happened. Use this template:
+
+   ````markdown
+   # iter-NNN — codex adversarial review stalled
+
+   **Verdict:** <stalled | error | codex-reproducible-hang>
+   **Job ID:** <job_id>
+   **Cancel outcome:** <cleared in <Xs> | still running after 30s cancel grace>
+   **Elapsed at halt:** <e.g. 3m 12s> (start <ISO> → halt <ISO>)
+   **Trigger:** <one of: poll-loop STALL_DETECTED frozen_for=<Xs> | poll-loop TIMEOUT at 10m cap | repeated status errors | broker terminal state=<failed|cancelled>>
+
+   ## Last broker state
+
+   - **Last status hash:** <md5 from poll loop's LAST_STATUS_HASH, if STALL_DETECTED>
+   - **Last log mtime:** <ISO from poll loop's LAST_LOG_MTIME, if STALL_DETECTED>
+   - **Broker log path:** `<absolute path to the broker's .log file>`
+   - **Last progressPreview entries (from `status <job_id>`):**
+     ```
+     <verbatim Progress: section from the final status call — typically 4 lines>
+     ```
+
+   ## Cancel attempt
+
+   ```
+   <verbatim stderr from `node "$COMPANION_SCRIPT" cancel <job-id>`>
+   ```
+
+   <if MSYS path mangling detected in cancel stderr:>
+   _Detected the `'C:/Program Files/Git/PID'` MSYS path-translation signature in cancel stderr — this is a known Git Bash compat issue in `codex-companion`'s `taskkill` fallback. See user recovery below._
+   <end if>
+
+   ## User-side recovery
+
+   Run from **PowerShell** (not Git Bash):
+
+   ```powershell
+   # Confirm process is the wedged codex review
+   Get-Process -Id <pid> | Format-List Id, Name, StartTime, CPU, Path
+
+   # Terminate (taskkill via Git Bash would mangle /PID; use Stop-Process)
+   Stop-Process -Id <pid> -Force
+
+   # Confirm broker now shows no running jobs
+   node "<companion-script-path>" status --all
+   ```
+
+   ## Iteration context
+
+   - **Iteration:** <N> of <max_iter>
+   - **Threshold:** <threshold>
+   - **Focus text:** see [`iter-NNN-focus.md`](iter-NNN-focus.md)
+   - **Branch:** <branch>
+   - **PR:** <pr_url>
+
+   ## Next steps
+
+   <verdict-specific suggestions — pulled from Phase 5 next-steps table for the matching verdict>
+   ````
+
+   Record the path on the iteration's `findings_history` entry as `stalled_breadcrumb_path`. The breadcrumb is forensic — codex content stays verbatim where present (Progress preview, cancel stderr); clodex's contribution is only the markdown framing. Do not editorialize about why codex hung.
 
 Different verdicts surface different next-step suggestions in the report:
 

@@ -1,4 +1,4 @@
-`clodex@lukas-local` **v0.2.6** — per-iteration `iter-NNN-review.md` (human-readable rendering of codex.json)
+`clodex@lukas-local` **v0.2.7** — stalled-iteration breadcrumb (`iter-NNN-stalled.md`) + sharper stall detection (~3 min instead of 10 min)
 
 ## /clodex — Autonomous Plan → Ship → Review → Fix Loop
 
@@ -94,12 +94,15 @@ A finding blocks iff its severity rank is strictly greater than the threshold ra
 
 `.clodex/state.json` (gitignored, schema v2) records task, branch, PR, iteration, findings_history, prior_runs, pending_migrations. Schema upgrade from v1 happens automatically on first read.
 
-Per-iteration artifacts (as of v0.2.6) live under `.clodex/runs/<branch-slug>/` — one subdirectory per feature branch — with up to four files per iteration:
+Per-iteration artifacts (as of v0.2.7) live under `.clodex/runs/<branch-slug>/` — one subdirectory per feature branch — with up to five files per iteration:
 
 - `iter-NNN-focus.md` (always) — input: focus text sent to codex
-- `iter-NNN-codex.json` (always) — output: codex's raw return, machine-readable
-- `iter-NNN-review.md` (always, v0.2.6+) — output: human-readable rendering of codex.json
-- `iter-NNN-fix.md` (only when findings-fixer was dispatched) — action: triage + commit summary
+- `iter-NNN-codex.json` (when codex returned a verdict) — output: codex's raw return, machine-readable
+- `iter-NNN-review.md` (when codex returned a verdict, v0.2.6+) — output: human-readable rendering of codex.json
+- `iter-NNN-fix.md` (when findings-fixer was dispatched) — action: triage + commit summary
+- `iter-NNN-stalled.md` (when verdict was stalled/error/hang, v0.2.7+) — diagnostic breadcrumb: job ID, last-known broker state, cancel outcome, user-side recovery commands
+
+A given iteration always has `focus.md`, plus EITHER {`codex.json` + `review.md` and optionally `fix.md`} OR `stalled.md` — never both. The pairing is the disk-level signal of whether codex produced a verdict for that iteration.
 
 Iteration numbers are zero-padded to 3 digits. Extensions are semantic: `.json` for JSON, `.md` for markdown. The branch slug replaces `/` in the branch name with `--`.
 
