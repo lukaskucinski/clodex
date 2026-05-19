@@ -35,39 +35,43 @@ The rules reproduced below mirror HARD_RULES.md and exist for reviewers reading 
 
 These rules exist because of real failures in v0.1. Read them once at the start and treat them as inviolable for the rest of the run. If a rule would force you to halt, halt — do not improvise around it.
 
-1. **Codex is the only review pass (intent unchanged; mechanism flexibility added in v0.3).** The codex plugin's adversarial-review code path is the ONLY sanctioned way to invoke a review. The underlying call MUST be one of codex-companion.mjs's documented commands: `adversarial-review`, `status`, `result`, `cancel`. Resolve `${COMPANION_SCRIPT}` once in pre-flight (see "Pre-flight checks") and reuse it for every subsequent call.
+1. **Codex is the only review pass (v0.3.1 — REVERT of v0.3.0 PowerShell pivot; Bash is canonical again).** The codex plugin's adversarial-review code path is the ONLY sanctioned way to invoke a review. The underlying call MUST be one of codex-companion.mjs's documented commands: `adversarial-review`, `status`, `result`, `cancel`. Resolve `${COMPANION_SCRIPT}` once in pre-flight (see "Pre-flight checks") and reuse it for every subsequent call.
 
-   **What's flexible (v0.3+): invocation mechanics.** The shell used to invoke the companion script, stdio handling, and retry/backoff policy are flexible per the documented recovery contract. Specifically:
-   - **On Windows: PowerShell is the preferred shell** for all codex-companion invocations. It avoids the documented MSYS `/PID` mangling bug (#331) in the cancel fallback and may avoid the IPC pipe wedge pattern (#330) that Bash-spawned-detached-node correlates with.
-   - On Unix: Bash default.
-   - Bash fallback path on Windows is still allowed, with stdin closed via `< /dev/null` to defend against inherited-handle issues on detached-node spawns.
-   - Thin invocation helpers (inline Bash + Node one-liners; or PowerShell one-liners) that pick the appropriate shell and handle known error patterns are ALLOWED. They are NOT "wrappers" in the forbidden sense — they only normalize invocation mechanics, do NOT change what review tool runs.
+   **Bash is the canonical shell** for every codex-companion invocation. This is the v0.2.x pattern validated end-to-end in the May 14 PR #77 production run. v0.3.0's PowerShell-preferred-on-Windows experiment is reverted; evidence converged on shell choice being the load-bearing variable that broke a working pattern (same broker, same codex CLI in memory, manual-Bash succeeded while clodex-PowerShell failed). The single preserved defense-in-depth measure from v0.3.0 is closing inherited stdin via `< /dev/null` on the launch.
 
-   If the companion script errors, returns no job ID, returns invalid JSON, or codex stalls past the polling cap AND the v0.3 retry contract (3 attempts per iteration with exponential backoff per Phase 4c stalled-handling) has been exhausted: halt the loop, write `verdict='stalled'`/`'codex-reproducible-hang'`/`'error'` to state, surface to the user, and stop.
+   Launch invocation form:
+   ```bash
+   node "$COMPANION_SCRIPT" adversarial-review --background --base main "FOCUS" < /dev/null
+   ```
+   via the **Bash** tool with `run_in_background: true`.
 
-   **Forbidden (unchanged):**
+   If the companion script errors, returns no job ID, returns invalid JSON, or codex stalls past the polling cap AND the v0.2.8 single-retry broker-recovery cycle has been attempted: halt the loop, write `verdict='stalled'`/`'codex-reproducible-hang'`/`'error'` to state, surface to the user, and stop.
+
+   **Forbidden:**
    - OpenAI `codex` CLI binary (`codex` / `codex review` / `codex exec`) — that's a separate tool from the codex plugin.
+   - PowerShell for invoking `codex-companion.mjs` subcommands (`adversarial-review`, `status`, `result`, `cancel`). PowerShell's sole sanctioned use is `Stop-Process` for the broker-kill carve-out in Rule 2.
+   - Custom wrappers around the companion script. Call `node "$COMPANION_SCRIPT" <subcommand>` directly under Bash; nothing in between.
    - Dispatching Claude subagents (general-purpose or specialized) as a substitute review pass. Claude reviewing Claude's own work is not the independent perspective clodex exists to provide.
    - Writing your own focus text inline and passing it to any entry point other than what `clodex-focus-runner` produces. (Hard rule 3.)
-   - Building a thick wrapper script that introduces NEW review behavior beyond shell selection + stdio + retry — e.g., a wrapper that "fixes" codex output or substitutes its own review logic.
 
-2. **Positive contract for plugin-state operations (v0.3 reframe — replaces v0.2.6's "no writes + exception list").** Anything in the contract below is allowed; anything not in the contract is forbidden.
+2. **Plugin-state operations (positive contract — Bash-mandatory).** Anything in the contract below is allowed; anything not in the contract is forbidden. All shell invocations use Bash, with one narrow PowerShell carve-out for `Stop-Process`.
 
    **Allowed:**
    - **Read any plugin state file** under `~/.claude/plugins/data/` or `~/.claude/plugins/cache/` — including `broker.json`, `state.json`, job log files. Read-only for diagnostic purposes is always permitted.
-   - **Invoke `codex-companion.mjs <command>` via any shell** (Bash, PowerShell, etc.) — the `<command>` must be one of the documented commands listed in Rule 1.
-   - **Kill the broker process PID via `powershell.exe Stop-Process -Id <pid> -Force`** in two contexts: (a) pre-flight broker wedge recovery (Phase 0.5) when `status --all --json` reports stale running jobs not produced by this clodex run; (b) mid-iteration stall recovery (Phase 4c) as part of the retry cycle (up to 3 retries per iteration). The broker PID is read from `broker.json` (allowed under the read clause above). The kill triggers codex-companion's own `ensureBrokerSession` to detect dead-broker and respawn cleanly via its internal `teardownBrokerSession` + `clearBrokerSession`.
+   - **Invoke `codex-companion.mjs <command>` via Bash** — the `<command>` must be one of the documented commands listed in Rule 1. Bash is the only allowed shell for these invocations.
+   - **Kill the broker process PID via `powershell.exe -NoProfile -Command "Stop-Process -Id <pid> -Force"`** in two contexts (the narrow PowerShell carve-out): (a) pre-flight broker wedge recovery (Phase 0.5) when `status --all --json` reports stale running jobs not produced by this clodex run; (b) mid-iteration stall recovery (Phase 4c) as part of the v0.2.8 single-retry cycle. The broker PID is read from `broker.json` (allowed under the read clause above). The kill triggers codex-companion's own `ensureBrokerSession` to detect dead-broker and respawn cleanly. PowerShell `Stop-Process` is used here because Bash's `taskkill /PID` fallback in Git Bash mangles the flag via MSYS path translation (`/PID` → `C:/Program Files/Git/PID`).
    - **Write to `.clodex/` in the current repository** — clodex's own state directory.
    - **Write to files the implementation phase legitimately edits** — project working files, not plugin state.
 
    **Forbidden:**
    - Direct edits to `~/.claude/plugins/data/` or `~/.claude/plugins/cache/` paths (state.json, broker.json, job logs).
+   - PowerShell for any codex-companion subcommand invocation. The sole PowerShell carve-out is `Stop-Process` above.
    - Killing non-broker processes by name pattern (e.g., `Get-Process node.exe | Stop-Process`). The kill clause authorizes the broker PID specifically (read from broker.json); pattern-based kills risk terminating unrelated processes.
-   - More than 4 broker kills per clodex run total (1 in pre-flight + up to 3 in mid-iteration retry). If all 4 attempts fail, halt and surface — the issue is upstream beyond clodex's reach.
+   - More than 2 broker kills per clodex run total (1 in pre-flight + 1 in mid-iteration if stall fires). v0.3.0's "up to 4 kills with 3 retries" expansion is reverted.
 
    Specific anti-patterns observed in v0.1 incidents (still forbidden):
    - `Stop-Process -Id <codex_pid> -Force; ...; Set-Content "...\codex-openai-codex\state\...\state.json"` — sanctioned kill does NOT pair with state-file edits. codex-companion cleans up its own state.
-   - Manually editing job-record JSON files under `~/.claude/plugins/data/codex-openai-codex/state/<workspace>/jobs/` — invoke `cancel <job-id>` via PowerShell instead (sanctioned through codex-companion's own API).
+   - Manually editing job-record JSON files under `~/.claude/plugins/data/codex-openai-codex/state/<workspace>/jobs/` — invoke `cancel <job-id>` via Bash instead (sanctioned through codex-companion's own API). If the Bash cancel hits the MSYS bug, surface the failure per Rule 4 — do not silently switch to PowerShell invocation of cancel.
 
 3. **Always dispatch the `clodex-focus-runner` agent for Phase 4a.** Never write the focus text inline in your own context. The agent enforces the focus-content discipline (≤3 named failure modes, trail-heads only, no boilerplate re-statement of the adversarial frame). If you find yourself drafting `(1) Trigger… (2) Pre-submit… (3) TOCTOU…` in your own response, you are off-spec — dispatch the agent instead.
 
@@ -272,7 +276,7 @@ Severity ranks: `critical=4, high=3, medium=2, low=1`. Threshold ranks add `appr
 The block reproduced below mirrors HELP.md and exists as a SKILL-internal reference (so reviewers reading SKILL.md can see what users get) and as a fallback if HELP.md is somehow missing. When parse step 0 cannot resolve HELP.md (Glob returns no match), emit the following markdown block verbatim to the user and STOP. Do NOT prepend chatter ("Here's the help…"), do NOT append commentary. Keep HELP.md and this block in sync on every edit.
 
 ````markdown
-`clodex@lukas-local` **v0.3.0** — mechanism flexibility (PowerShell preferred on Windows for adversarial-review launch + cancel, bypasses MSYS bug + IPC wedge) + recovery contract (pre-flight orphaned-state cleanup, 3-retry aggressive stall recovery with exponential backoff). Hard rules reframed: Rule 1 separates review-tool identity from invocation mechanics, Rule 2 is now a positive contract.
+`clodex@lukas-local` **v0.3.1** — REVERT of the v0.3.0 PowerShell-preferred pivot. Bash is canonical again for all codex-companion invocations (matches the proven-working May 14 PR #77 pattern). Single-retry broker-wedge recovery restored (was: 3-retry exponential backoff). Phase 0.6 orphaned-state cleanup preserved (now Bash-invoked, surfaces MSYS bug per Rule 4). PowerShell retained only as the narrow `Stop-Process` carve-out for broker-kill. Paired with HARD_RULES.md v0.3.1.
 
 ## /clodex — Autonomous Plan → Ship → Review → Fix Loop
 
@@ -569,11 +573,13 @@ If no wedged jobs are detected, this step is a no-op (just emits a "healthy" lin
 
 If wedged jobs are detected but the recovery fails (Stop-Process errored, broker PID missing, or post-kill status still shows the same wedged jobs): halt and surface to the user with the broker.json path, broker PID, and a copy-pasteable PowerShell command. Do NOT improvise other recovery paths (Hard Rule 4 still applies — the rule-2 positive contract is explicit about what's allowed).
 
-### Pre-flight orphaned-state cleanup (v0.3 — runs after broker wedge check)
+### Pre-flight orphaned-state cleanup (v0.3.0 — runs after broker wedge check; v0.3.1 Bash-invoked cancel)
 
 There's a distinct failure mode from a wedged broker: an **orphaned record** in codex-companion's persisted `state.json`. This happens when a prior clodex run's job hung, the underlying codex process died (manually killed or otherwise), but the persisted state record was never updated because the broker had no in-memory record to reconcile. The result: `status <prior-job-id>` reports `state=running` indefinitely (reading from the orphaned file), even though the broker itself reports clean (`running: []` in `status --all`).
 
-Without this cleanup, `--continue` step 5 (which checks the prior job state) sees the orphaned "running" record and halts. v0.3 cleans this up automatically by invoking the sanctioned `cancel <job-id>` command via PowerShell (which bypasses the MSYS `/PID` bug that broke earlier cleanup attempts).
+Without this cleanup, `--continue` step 5 (which checks the prior job state) sees the orphaned "running" record and halts. This step automatically invokes the sanctioned `cancel <job-id>` command via Bash to clear the orphan.
+
+**Known risk:** Bash `cancel` on Windows-Git-Bash can hit the MSYS `/PID` path-mangling bug (upstream openai/codex-plugin-cc#331). When this fires, the cancel reports failure and Phase 0.6 surfaces the wedge to the user per Hard Rule 4 (do not improvise around it — do not silently switch to PowerShell invocation of cancel, even though it would work). The user can manually invoke `cancel` from PowerShell as documented in the surface message. v0.3.0 attempted to auto-route cancel through PowerShell here; v0.3.1 reverts that to Bash because the broader PowerShell-preferred pivot in v0.3.0 was wrong, and consistency matters more than auto-clearing one specific failure mode. Most orphan cancels do work via Bash — the MSYS bug only fires when the bash environment is hot.
 
 This step runs AFTER Phase 0.5 (broker wedge recovery) and BEFORE the `--continue` safety check:
 
@@ -614,16 +620,16 @@ process.stdin.on('end', () => {
     if [ "$BROKER_HAS_IT" = "1" ]; then
       echo "[clodex pre-flight] prior job $LAST_JOB_ID is genuinely running in the live broker (5+ min stale check is in Phase 0.5). Not orphaned; will defer to --continue safety check."
     else
-      # Orphaned: status file says running, broker has no in-memory record. Invoke cancel via PowerShell (bypasses MSYS bug).
-      echo "[clodex pre-flight] ORPHANED RECORD DETECTED: $LAST_JOB_ID claims running in state.json but broker has no in-memory record. Invoking cancel via PowerShell to clear (bypasses MSYS /PID mangling that breaks Bash-invoked cancel)."
-      powershell.exe -NoProfile -Command "& '$COMPANION_SCRIPT' cancel $LAST_JOB_ID" 2>&1 | head -10 || true
+      # Orphaned: status file says running, broker has no in-memory record. Invoke cancel via Bash (v0.3.1).
+      echo "[clodex pre-flight] ORPHANED RECORD DETECTED: $LAST_JOB_ID claims running in state.json but broker has no in-memory record. Invoking cancel via Bash to clear."
+      node "$COMPANION_SCRIPT" cancel "$LAST_JOB_ID" 2>&1 | head -10 || true
       sleep 3
       # Re-verify
       RECHECK=$(node "$COMPANION_SCRIPT" status "$LAST_JOB_ID" 2>&1 | head -3 | grep -c " | running | " || true)
       if [ "$RECHECK" -eq 0 ]; then
         echo "[clodex pre-flight] orphaned record cleared; --continue can now proceed cleanly."
       else
-        echo "[clodex pre-flight] cancel via PowerShell did not clear orphaned record. Halting and surfacing to user."
+        echo "[clodex pre-flight] Bash-invoked cancel did not clear orphaned record (possible MSYS /PID bug — codex-plugin-cc#331). Halting and surfacing to user. Manual recovery: invoke 'codex-companion.mjs cancel $LAST_JOB_ID' from PowerShell to bypass the MSYS bug, then re-run /clodex --continue."
         # Halt: orphan cleanup failed despite sanctioned path. Per Hard Rule 4, do not invent further paths.
         # Surface state-dir, job ID, and manual recovery command.
         exit 1
@@ -633,9 +639,9 @@ process.stdin.on('end', () => {
 fi
 ```
 
-PowerShell shell choice for the cancel call is explicit and sanctioned by Rule 1's mechanism-flexibility allowance plus Rule 2's positive contract (invoking codex-companion commands via any shell). The cancel command itself is one of codex-companion's documented commands — we just invoke it through the shell that doesn't have the MSYS path-mangling bug.
+The cancel command is invoked via Bash per Hard Rule 1 (Bash is canonical for all codex-companion subcommand invocations). If the cancel fails on the MSYS bug, surface the failure to the user with the explicit manual-recovery command (PowerShell `cancel` invocation) — do not silently switch shells under Hard Rule 4.
 
-If the orphan cleanup itself fails (e.g., cancel via PowerShell errors out, or the post-cancel status still reports running): halt and surface, exactly as Phase 0.5 does. Do NOT escalate to direct state-file edits — that remains forbidden under Rule 2.
+If the orphan cleanup itself fails (e.g., cancel via Bash errors out due to MSYS bug, or the post-cancel status still reports running): halt and surface, exactly as Phase 0.5 does. Do NOT escalate to direct state-file edits — that remains forbidden under Rule 2.
 
 ## Phase 1 — Brainstorm + plan
 
@@ -746,34 +752,25 @@ You receive back exactly one of:
 
 If the returned line does NOT start with `/codex:adversarial-review`, halt — the agent is misbehaving and you must not paper over it by invoking codex some other way.
 
-### 4b. Run adversarial review (PowerShell on Windows, Bash on Unix — v0.3)
+### 4b. Run adversarial review (companion-script via Bash — v0.3.1)
 
-The focus-runner returns the canonical `/codex:adversarial-review --background --base main "FOCUS TEXT"` form. **Translate** this into a companion-script invocation before running — replace the `/codex:adversarial-review` prefix with `node "$COMPANION_SCRIPT" adversarial-review`. Preserve everything else (`--background`, `--base main`, the quoted focus text) verbatim.
+The focus-runner returns the canonical `/codex:adversarial-review --background --base main "FOCUS TEXT"` form. **Translate** this into the companion-script invocation before running — replace the `/codex:adversarial-review` prefix with `node "$COMPANION_SCRIPT" adversarial-review`. Preserve everything else (`--background`, `--base main`, the quoted focus text) verbatim.
 
-**Shell choice (v0.3 — per Hard Rule 1 mechanism flexibility):**
-
-- **On Windows: PowerShell is the primary shell** for the adversarial-review launch. PowerShell-spawned node has a different stdio inheritance pattern than Bash-with-`run_in_background:true`-spawned-detached-node, and the latter correlates with the IPC pipe wedge pattern in upstream codex-companion (#330). PowerShell invocation matches the pattern that worked reliably in pre-v0.2.1 slash-command-launched codex runs.
-- **On Unix: Bash is the default.** The Windows-specific IPC wedge does not occur on Unix.
-- **Fallback: Bash on Windows** (with `< /dev/null` stdin closure) is permitted if PowerShell is unavailable or errors out. The fallback is for defense in depth, not the primary path.
+**Shell: Bash (canonical, per Hard Rule 1 — v0.3.1 reverts v0.3.0's PowerShell-preferred pivot).** Bash is the only allowed shell for codex-companion subcommand invocations. PowerShell is reserved for the narrow `Stop-Process` broker-kill carve-out only. The May 14 PR #77 production run and today's successful manual `/codex:adversarial-review` Bash invocations against this very broker prove the Bash pattern works; the v0.3.0 PowerShell experiment broke it.
 
 So a focus-runner output of:
 ```
 /codex:adversarial-review --background --base main "Application scale: ... Trail-heads: ... Named failure modes: ..."
 ```
 
-becomes the **PowerShell invocation on Windows** (use the PowerShell tool with `run_in_background: true`):
-```powershell
-& "C:\Program Files\nodejs\node.exe" "$COMPANION_SCRIPT" adversarial-review --background --base main "Application scale: ... Trail-heads: ... Named failure modes: ..."
-```
-
-Or the **Bash fallback** (Unix; or Windows-with-fallback) via the Bash tool with `run_in_background: true`:
+becomes the **Bash invocation** via the Bash tool with `run_in_background: true`:
 ```bash
-node "$COMPANION_SCRIPT" adversarial-review --background --base main "..." < /dev/null
+node "$COMPANION_SCRIPT" adversarial-review --background --base main "Application scale: ... Trail-heads: ... Named failure modes: ..." < /dev/null
 ```
 
-The `< /dev/null` stdin closure is important on Windows-Bash to prevent the detached node process from inheriting a stdin handle that the parent shell never closes — a contributing factor to the IPC pipe deadlock pattern.
+The `< /dev/null` stdin closure is preserved from v0.3.0 as the one durable defense-in-depth measure — it prevents the detached node process from inheriting a stdin handle the parent shell never closes. (Read codex-companion.mjs once during install/edit to confirm it does not read stdin for the `adversarial-review` subcommand. It doesn't — the focus is passed via argv.)
 
-Always include `--background` regardless of what codex-focus picked. The shell tool's `run_in_background: true` does the actual detachment; the `--background` flag on `adversarial-review` is a no-op for this subcommand inside the companion script.
+Always include `--background` regardless of what codex-focus picked. The Bash tool's `run_in_background: true` does the actual detachment; the `--background` flag on `adversarial-review` is a no-op for this subcommand inside the companion script.
 
 **Before launching:** ensure the run directory exists and persist the focus text to disk for forensics. Replace `<branch-slug>` with the current branch with `/` → `--` (e.g. `clodex--fix-draft-resume-500-20260516-1430`):
 
@@ -783,22 +780,17 @@ mkdir -p .clodex/runs/<branch-slug>
 # (use the Write tool; the file's content is the literal /codex:adversarial-review … line)
 ```
 
-Then run the translated command via PowerShell (Windows primary) or Bash (Unix / Windows fallback) with `run_in_background: true`. Capture the returned `shell_id`. The shell tool returns immediately; the node process continues running detached, writing job state to the codex broker.
+Then run the translated command via Bash with `run_in_background: true`. Capture the returned `shell_id`. The Bash tool returns immediately; the node process continues running detached, writing job state to the codex broker.
 
-Immediately after launching, **recover the job ID** by querying the broker. The status query is a quick synchronous call (NOT the long-running review), so either shell works — prefer PowerShell on Windows for consistency:
+Immediately after launching, **recover the job ID** by querying the broker via Bash:
 
-```powershell
-& "C:\Program Files\nodejs\node.exe" "$COMPANION_SCRIPT" status --all --json
-```
-
-Or via Bash on Unix:
 ```bash
 node "$COMPANION_SCRIPT" status --all --json
 ```
 
 The output is a JSON array of all known jobs. Find the most-recent entry where `kind == "adversarial-review"` and `state` is one of `queued` / `running` (or `created_at` is within the last 10 seconds). Its `id` field is the job ID. Record it as `last_codex_job_id` in state. Also persist the per-iteration `review_method` (see Phase 4c) — set to `codex-adversarial-review` on success.
 
-**If the adversarial-review launch errors immediately (non-zero exit before backgrounding), if `status --all --json` returns no matching job after a 2s retry, or if the recovered job's state is `error` / `failed`:** the v0.3 retry contract (Phase 4c stalled-handling, 3 attempts with exponential backoff) takes over. Do NOT fall back to the OpenAI `codex` CLI, do NOT dispatch a Claude subagent as a substitute, do NOT write to broker state to "fix" a stuck job (Hard Rule 1, Hard Rule 2).
+**If the adversarial-review launch errors immediately (non-zero exit before backgrounding), if `status --all --json` returns no matching job after a 2s retry, or if the recovered job's state is `error` / `failed`:** the v0.2.8 single-retry broker-recovery cycle (Phase 4c stalled-handling) takes over. Do NOT fall back to the OpenAI `codex` CLI, do NOT dispatch a Claude subagent as a substitute, do NOT write to broker state to "fix" a stuck job (Hard Rule 1, Hard Rule 2).
 
 ### 4c. Wait for completion (smart background poll — v0.2.7 stall-aware)
 
@@ -895,58 +887,55 @@ Do this retry at most once per iteration. If you retried earlier this iteration 
 
 When you hit any of: the 10-min cap (`TIMEOUT` from the poll loop), early stall detection (`STALL_DETECTED` from the poll loop), repeated transient `status` errors, or a terminal `failed`/`cancelled` state from the broker:
 
-**v0.3 retry contract.** The codex IPC wedge is stochastic — broker freshness changes the odds of completion. v0.3 attempts recovery up to 3 times per iteration before escalating to `codex-reproducible-hang`. Each retry: cancel the wedged job, kill the broker, wait an exponential backoff interval (30s → 60s → 120s), retry the launch via PowerShell (the v0.3 primary path for Windows). Costs: time, not money — cancelled jobs don't bill.
+**Auto-recovery (v0.2.8 / v0.3.1 — single retry).**
 
-Track retry count in `state.findings_history[current].retry_attempts` (integer, starts at 0).
+The first time an iteration stalls in a given clodex run, attempt a single automated recovery — cancel the job, kill the broker, then retry the SAME iteration with the same focus. If the second attempt also stalls, escalate to permanent stall handling. This gives clodex one chance to clear a wedged broker without involving the user, while still avoiding infinite loops. v0.3.0's "3 retries with exponential backoff" expansion is reverted in v0.3.1 — the wedge is not a stochastic mid-call issue that re-rolls usefully; a single fresh-broker retry either works or the diff/environment is structurally hung.
 
-1. **Cancel the wedged job via PowerShell** (sanctioned per Hard Rule 1 mechanism flexibility + Rule 2 positive contract). PowerShell-invoked cancel avoids the MSYS `/PID` mangling bug in Git Bash:
+1. **Cancel the wedged job via Bash** (sanctioned per Rule 2 positive contract):
 
-   ```powershell
-   & "C:\Program Files\nodejs\node.exe" "$COMPANION_SCRIPT" cancel <job-id>
+   ```bash
+   node "$COMPANION_SCRIPT" cancel <job-id>
    ```
 
-   Give it up to 30 seconds. If cancel from PowerShell errors anyway (rare — would indicate a different upstream issue), proceed to the broker kill step.
+   Give it up to 30 seconds. On Windows with Git Bash, `codex-companion`'s `taskkill /PID <pid>` fallback has been observed to fail because MSYS translates `/PID` → `C:/Program Files/Git/PID`. When `cancel` stderr contains `'C:/Program Files/Git/PID'`, the fallback failed but the broker may still be killable via the broker-kill step below.
 
-2. Re-check status via PowerShell:
+2. Re-check status via Bash:
 
-   ```powershell
-   & "C:\Program Files\nodejs\node.exe" "$COMPANION_SCRIPT" status <job-id>
+   ```bash
+   node "$COMPANION_SCRIPT" status <job-id>
    ```
 
    If the job is no longer `running`/`queued`, the cancel succeeded. Proceed to retry decision (step 4).
 
-3. **Broker kill recovery** (sanctioned per Rule 2 positive contract — see HARD_RULES.md): if the job is still wedged after cancel, kill the broker PID using the same mechanism as the pre-flight broker recovery section:
+3. **Broker kill recovery** (sanctioned per Rule 2 positive contract — see HARD_RULES.md): if this is the FIRST stall this run AND the job is still wedged after cancel, kill the broker PID via PowerShell `Stop-Process` (the one PowerShell carve-out — Bash `taskkill /PID` hits the MSYS bug):
 
    ```bash
-   # Find broker.json via the wedged job's logFile, read broker.pid, Stop-Process the PID via PowerShell.
+   # Find broker.json via the wedged job's logFile, read broker.pid, then:
+   powershell.exe -NoProfile -Command "Stop-Process -Id <pid> -Force"
    # codex-companion's ensureBrokerSession respawns a fresh broker on the next call.
    ```
 
    Record on the iteration's `findings_history` entry: `broker_recovery_attempted: true`, `broker_pid_killed: <pid>`.
 
-4. **Retry decision (v0.3 — up to 3 attempts per iteration).** Check `state.findings_history[current].retry_attempts`:
+4. **Retry decision (v0.2.8 / v0.3.1 — single attempt).** Check `state.findings_history` for prior `broker_recovery_attempted: true` entries in THIS run.
 
-   - **If `retry_attempts < 3`:** increment `retry_attempts`, wait the exponential backoff interval (30s for attempt 1→2, 60s for 2→3, 120s for 3→4 cap), then re-launch the SAME iteration with the same focus file. Re-launch via the PowerShell adversarial-review invocation from Phase 4b (the focus is already on disk; do NOT re-dispatch the focus-runner — the focus is what we want to validate against). Then re-enter Phase 4c poll loop.
+   - **If this is the first broker-recovery attempt of the run:** retry the SAME iteration with the same focus file (`.clodex/runs/<branch-slug>/iter-<padded-N>-focus.md`) — re-launch via Phase 4b's Bash invocation with the same `iter-<padded-N>-focus.md` content. Do NOT re-dispatch the focus-runner (the focus is already on disk and is what we want to validate against). The fresh broker spawned by `ensureBrokerSession` should service the retried job cleanly. Record the retry in state as `findings_history[i].retried_after_broker_recovery: true`.
 
-   - **If `retry_attempts == 3`:** the wedge is reproducible and not transient. Escalate to `codex-reproducible-hang` verdict and skip to step 7. The diff or codex's interaction with this Windows environment is structurally beyond clodex's recovery scope; further retries waste wall-clock time without changing the outcome.
+   - **If this iteration has ALREADY been retried after a broker-recovery attempt** (i.e. `findings_history[i].retried_after_broker_recovery: true` is set): do NOT retry again — escalate to the permanent-stall handling below. The recovery clearly didn't take; further retries are wasted budget.
 
-5. **Output a heartbeat between retries** so the user can see what's happening:
+5. **If the broker-kill recovery step was skipped** (e.g., the cancel cleared the job cleanly without needing it), skip the retry — proceed directly to the permanent-stall handling below.
 
-   ```
-   [clodex iter <N>/<max>] stall recovery: attempt <K>/3, backoff <Xs>, cancelling job, killing broker, retrying via PowerShell...
-   ```
+**Permanent stall handling (when auto-recovery doesn't clear it, or has already been attempted):**
 
-6. **Across-iteration escalation check:** if `state.findings_history[current-1]` (prior iteration) also escalated to `codex-reproducible-hang`, do NOT enter the retry loop at all — escalate immediately on the first stall this iteration. Two consecutive `codex-reproducible-hang` iterations means the diff itself is the issue; retrying inside iteration N when iteration N-1 just failed the same way is wasted work.
+6. If the job is STILL running after cancel + broker-kill recovery (OR the retry in step 4 also stalled): surface to the user with the job ID, the elapsed time, and explicit copy-pasteable PowerShell to investigate. Do NOT improvise additional recovery paths beyond the documented broker-kill (Hard Rule 4 + Hard Rule 2 still bound everything else). Include both the broker-reported PID and `Stop-Process -Id <pid> -Force` in the breadcrumb and Phase 5 report.
 
-**Permanent stall handling (after 3 retries exhausted OR back-to-back hang escalation):**
+7. Decide which verdict to set:
+   - **`codex-reproducible-hang`** if EITHER this is the 2nd consecutive iteration where codex stalled at substantially the same phase, OR this iteration was already retried after a broker-recovery attempt and stalled again. Check `state.findings_history` for the prior iteration's `verdict` AND the current iteration's `retried_after_broker_recovery` flag — if either condition fires, escalate to `codex-reproducible-hang`. The diff itself is the suspect (exceeding codex's synthesis budget OR triggering an irrecoverable upstream IPC pattern); more iterations on the same branch will hang the same way.
+   - **`stalled`** if this is the first such failure, the failure shape differs from the prior iteration, AND auto-recovery has not yet been attempted (which would be unusual — auto-recovery is the default path now).
 
-7. **Set verdict to `codex-reproducible-hang`** (or `stalled` if this is the very first stall observed in clodex history for this branch, before the across-iteration check applies). Surface to the user with the job ID, the elapsed time per attempt, what was tried, and explicit copy-pasteable PowerShell to investigate. Do NOT improvise additional recovery paths beyond the documented contract.
+8. Write `last_codex_job_id`, the per-iteration `review_method` (see "State file: per-iteration review_method"), `broker_recovery_attempted`, `broker_pid_killed`, and `retried_after_broker_recovery` (if applicable) to the iteration's `findings_history` entry. Persist a Phase-5-equivalent stalled report.
 
-8. Verdict has already been determined in step 7 (`codex-reproducible-hang` after 3 retries; `stalled` only for the rare first-ever-stall case before across-iteration escalation kicks in). This step (formerly v0.2.8's verdict-decision branch) is subsumed by step 7's logic.
-
-9. Write `last_codex_job_id`, the per-iteration `review_method` (see "State file: per-iteration review_method"), `broker_recovery_attempted`, `broker_pid_killed`, `retry_attempts`, and `retried_after_broker_recovery` (if applicable) to the iteration's `findings_history` entry. Persist a Phase-5-equivalent stalled report.
-
-10. **Write the stalled-iteration breadcrumb** to `.clodex/runs/<branch-slug>/iter-<padded-N>-stalled.md`. This file is the disk-level record of *why* this iteration produced no `codex.json` or `review.md` — six months later, someone navigating the runs directory should be able to open it and immediately understand what happened. Use this template:
+9. **Write the stalled-iteration breadcrumb** to `.clodex/runs/<branch-slug>/iter-<padded-N>-stalled.md`. This file is the disk-level record of *why* this iteration produced no `codex.json` or `review.md` — six months later, someone navigating the runs directory should be able to open it and immediately understand what happened. Use this template:
 
    ````markdown
    # iter-NNN — codex adversarial review stalled
@@ -977,17 +966,14 @@ Track retry count in `state.findings_history[current].retry_attempts` (integer, 
    _Detected the `'C:/Program Files/Git/PID'` MSYS path-translation signature in cancel stderr — this is a known Git Bash compat issue in `codex-companion`'s `taskkill` fallback. The v0.2.8 broker-kill recovery (below) uses PowerShell `Stop-Process` directly, bypassing this._
    <end if>
 
-   ## Recovery attempts (v0.3 — up to 3 retries with exponential backoff)
+   ## Recovery attempt (v0.2.8 / v0.3.1 single-retry contract)
 
-   - **Retry attempts:** <K> of 3 max
-   - **Backoff intervals used:** <e.g. 30s, 60s, 120s>
-   - **Broker kills performed (this iteration):** <count | 0 if cancel cleared without needing kill>
-   - **Broker PIDs killed:** <comma-separated list of PIDs | n/a>
-   - **Shell used for cancel:** <PowerShell (preferred on Windows) | Bash>
-   - **Shell used for retry launches:** <PowerShell (v0.3 primary on Windows) | Bash fallback>
-   - **Outcome:** <all 3 retries stalled — escalated to codex-reproducible-hang | back-to-back hang escalation skipped retry loop>
+   - **Broker recovery attempted:** <yes / no>
+   - **Broker PID killed:** <pid | n/a — no wedged broker detected>
+   - **Retry after recovery:** <yes / no>
+   - **Retry outcome:** <succeeded — codex completed iter <N> on retry | failed — second attempt also stalled, escalated to codex-reproducible-hang | not applicable — cancel cleared without needing broker kill>
 
-   If any retry had succeeded, no breadcrumb would be written for this iteration — the iter would have a `codex.json`+`review.md` instead. Presence of this breadcrumb means the v0.3 retry contract was fully exhausted without codex producing a verdict.
+   If the retry succeeded, no breadcrumb would be written for this iteration — the iter would have a `codex.json`+`review.md` instead. Presence of this breadcrumb means recovery did NOT take.
 
    ## User-side recovery
 
@@ -1021,8 +1007,8 @@ Track retry count in `state.findings_history[current].retry_attempts` (integer, 
 
 Different verdicts surface different next-step suggestions in the report:
 
-- `stalled` → (v0.3: rare — the 3-retry contract handles most stalls inline) suggest `/clodex --continue` after the user clears any stuck job. Include the verbatim recovery-attempts outcome from the breadcrumb so the user can see what was tried.
-- `codex-reproducible-hang` → v0.3's full retry contract (cancel + broker-kill + up to 3 re-launches via PowerShell with exponential backoff) has been exhausted without codex producing a verdict. The upstream issue (codex-plugin-cc#330) is structural and re-attempting against this broker is unlikely to help. Suggest, in order of likelihood: (a) split the PR into smaller pieces and run clodex on each in a fresh window; (b) re-run with a tighter focus targeting a single commit (`--scope commit:<sha>`) in a fresh window; (c) as a last resort, run `/codex:adversarial-review --base main` manually from a user-initiated turn in a fresh window. Opening a fresh Claude Code window is recommended for all three — Claude Code's loaded SKILL.md cache may have older orchestrator behavior that doesn't include v0.3's recovery contract.
+- `stalled` → (v0.3.1: rare — the single-retry broker recovery handles most stalls inline) suggest `/clodex --continue` after the user clears any stuck job. Include the verbatim broker-recovery outcome from the breadcrumb so the user can see what was tried.
+- `codex-reproducible-hang` → v0.2.8/v0.3.1's broker-kill recovery + single retry has been attempted and did not clear the wedge. Do NOT suggest a plain `--continue` — the upstream issue (codex-plugin-cc#330) is structural and re-attempting the same call against this Claude Code window's broker is likely to re-wedge. Suggest, in order of likelihood: (a) split the PR into smaller pieces and run clodex on each in a fresh window; (b) re-run with a tighter focus targeting a single commit (`--scope commit:<sha>`) in a fresh window; (c) as a last resort, run `/codex:adversarial-review --base main` manually from a user-initiated turn in a fresh window. **All three suggestions involve opening a fresh Claude Code window** — the codex-companion broker pollution can persist at the session level even after the in-process broker is killed, because the underlying named-pipe state may be tied to the parent Claude Code session.
 
 #### State file: per-iteration `review_method`
 

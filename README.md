@@ -4,7 +4,7 @@ Autonomous development loop for Claude Code: plan → implement → ship a PR �
 
 A ralph-loop variant tuned for the specific workflow of "Claude builds, codex reviews, Claude fixes, codex re-reviews." Composes existing skills (`superpowers:brainstorming`, `superpowers:writing-plans`, `superpowers:executing-plans`, `forge`, `ship`, `codex-focus`) and the codex plugin's `codex-companion.mjs` script rather than reimplementing them.
 
-**Status:** v0.3.0 (paired with HARD_RULES.md v0.3). v0.3.0 reframes Hard Rules 1 and 2 to separate review-tool identity (immutable) from invocation mechanics (flexible per a documented recovery contract). The reframe addresses Windows-specific codex-companion brittleness: PowerShell is now the preferred shell for adversarial-review launch and cancel on Windows (bypasses the MSYS `/PID` mangling bug + the IPC pipe wedge that correlates with Bash-spawned-detached-node). A new Phase 0.6 auto-clears orphaned state-file records via sanctioned PowerShell cancel before the --continue safety check fires. Phase 4c stalled handling now retries up to 3 times per iteration with exponential backoff (30s/60s/120s) before escalating to `codex-reproducible-hang`. v0.2.9 lifted `--version`/`--help` into commands/clodex.md. v0.2.8 added broker wedge auto-recovery. v0.2.7 added per-iteration `iter-NNN-stalled.md` breadcrumbs + ~3-min stall detection. v0.2.1 adapts to codex plugin v1.0.4's `disable-model-invocation` policy (see "Codex plugin v1.0.4 compatibility (v0.2.1)" below); v0.2 was motivated by a v0.1 failure on a larger PR — see "Lessons from PR #78" below.
+**Status:** v0.3.1 — REVERT of the v0.3.0 PowerShell-preferred pivot (paired with HARD_RULES.md v0.3.1). Investigation across May 14–18 evidence converged on shell choice (Bash vs PowerShell) being the load-bearing variable that broke a working pattern: the May 14 PR #77 production run, a May 18 manual `/codex:adversarial-review` Bash invocation, and clodex v0.3.0's PowerShell invocation all attached to the same broker process and codex CLI binary — only the Bash-invoked ones succeeded. v0.3.1 restores Bash as the canonical shell for all codex-companion subcommand invocations (matches v0.2.5–v0.2.9), restores the v0.2.8 single-retry broker-wedge recovery (was: v0.3.0 3-retry exponential backoff), and preserves v0.3.0's Phase 0.6 orphaned-state cleanup as a Bash-invoked operation. PowerShell is retained only as the narrow sanctioned carve-out for `Stop-Process` broker-kill (because Git Bash's `taskkill /PID` fallback hits the MSYS path-mangling bug, upstream openai/codex-plugin-cc#331). The `< /dev/null` stdin closure on the launch is preserved from v0.3.0 as the one durable defense-in-depth measure. v0.2.9 lifted `--version`/`--help` into commands/clodex.md. v0.2.8 added broker wedge auto-recovery. v0.2.7 added per-iteration `iter-NNN-stalled.md` breadcrumbs + ~3-min stall detection. v0.2.1 adapts to codex plugin v1.0.4's `disable-model-invocation` policy (see "Codex plugin v1.0.4 compatibility (v0.2.1)" below); v0.2 was motivated by a v0.1 failure on a larger PR — see "Lessons from PR #78" below.
 
 ## Why
 
@@ -38,7 +38,7 @@ cat > ~/clodex-marketplace/.claude-plugin/marketplace.json <<'EOF'
   "description": "Clodex plugin via GitHub clone",
   "owner": { "name": "you" },
   "plugins": [
-    { "name": "clodex", "source": "../clodex", "version": "0.3.0", "category": "workflow" }
+    { "name": "clodex", "source": "../clodex", "version": "0.3.1", "category": "workflow" }
   ]
 }
 EOF
@@ -322,7 +322,7 @@ v0.2 hardens against all four failures: the hard rules in SKILL.md make each of 
 ```
 clodex/
 ├── .claude-plugin/
-│   └── plugin.json            # plugin manifest (version 0.3.0)
+│   └── plugin.json            # plugin manifest (version 0.3.1)
 ├── skills/
 │   └── clodex/
 │       └── SKILL.md           # orchestration playbook (the main agent reads this)
