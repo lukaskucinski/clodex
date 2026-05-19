@@ -4,7 +4,7 @@ Autonomous development loop for Claude Code: plan → implement → ship a PR �
 
 A ralph-loop variant tuned for the specific workflow of "Claude builds, codex reviews, Claude fixes, codex re-reviews." Composes existing skills (`superpowers:brainstorming`, `superpowers:writing-plans`, `superpowers:executing-plans`, `forge`, `ship`, `codex-focus`) and the codex plugin's `codex-companion.mjs` script rather than reimplementing them.
 
-**Status:** v0.2.9 (paired with HARD_RULES.md v0.2.6). v0.2.9 lifts `--version` and `--help` handling out of SKILL.md into commands/clodex.md so they always reflect the currently-installed plugin version, even in long-running Claude Code sessions whose SKILL.md cache predates the install (slash command bodies are re-read fresh per invocation; skill content is cached at session start). v0.2.8 added automated codex-companion broker wedge detection and recovery — pre-flight + mid-iteration. HARD_RULES.md v0.2.6 carves out the sanctioned broker-kill exception under Rule 2. v0.2.7 added per-iteration `iter-NNN-stalled.md` breadcrumbs + sharper stall detection (~3 min). v0.2.1 adapts to codex plugin v1.0.4's `disable-model-invocation` policy (see "Codex plugin v1.0.4 compatibility (v0.2.1)" below); v0.2 was motivated by a v0.1 failure on a larger PR — see "Lessons from PR #78" below.
+**Status:** v0.3.0 (paired with HARD_RULES.md v0.3). v0.3.0 reframes Hard Rules 1 and 2 to separate review-tool identity (immutable) from invocation mechanics (flexible per a documented recovery contract). The reframe addresses Windows-specific codex-companion brittleness: PowerShell is now the preferred shell for adversarial-review launch and cancel on Windows (bypasses the MSYS `/PID` mangling bug + the IPC pipe wedge that correlates with Bash-spawned-detached-node). A new Phase 0.6 auto-clears orphaned state-file records via sanctioned PowerShell cancel before the --continue safety check fires. Phase 4c stalled handling now retries up to 3 times per iteration with exponential backoff (30s/60s/120s) before escalating to `codex-reproducible-hang`. v0.2.9 lifted `--version`/`--help` into commands/clodex.md. v0.2.8 added broker wedge auto-recovery. v0.2.7 added per-iteration `iter-NNN-stalled.md` breadcrumbs + ~3-min stall detection. v0.2.1 adapts to codex plugin v1.0.4's `disable-model-invocation` policy (see "Codex plugin v1.0.4 compatibility (v0.2.1)" below); v0.2 was motivated by a v0.1 failure on a larger PR — see "Lessons from PR #78" below.
 
 ## Why
 
@@ -38,7 +38,7 @@ cat > ~/clodex-marketplace/.claude-plugin/marketplace.json <<'EOF'
   "description": "Clodex plugin via GitHub clone",
   "owner": { "name": "you" },
   "plugins": [
-    { "name": "clodex", "source": "../clodex", "version": "0.2.9", "category": "workflow" }
+    { "name": "clodex", "source": "../clodex", "version": "0.3.0", "category": "workflow" }
   ]
 }
 EOF
@@ -322,7 +322,7 @@ v0.2 hardens against all four failures: the hard rules in SKILL.md make each of 
 ```
 clodex/
 ├── .claude-plugin/
-│   └── plugin.json            # plugin manifest (version 0.2.9)
+│   └── plugin.json            # plugin manifest (version 0.3.0)
 ├── skills/
 │   └── clodex/
 │       └── SKILL.md           # orchestration playbook (the main agent reads this)

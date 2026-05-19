@@ -1,4 +1,4 @@
-`clodex@lukas-local` **v0.2.9** — meta-flag resilience: `--version` and `--help` handled in commands/clodex.md (re-read fresh per invocation) so they always reflect the currently-installed plugin version, even in long-running sessions with stale SKILL.md
+`clodex@lukas-local` **v0.3.0** — mechanism flexibility (PowerShell preferred on Windows for codex launch + cancel, bypasses MSYS bug + IPC wedge) + recovery contract (pre-flight orphaned-state auto-cleanup, 3-retry stall recovery with exponential backoff). Paired with HARD_RULES.md v0.3 which reframes Rules 1 and 2.
 
 ## /clodex — Autonomous Plan → Ship → Review → Fix Loop
 
@@ -116,12 +116,12 @@ Legacy flat files (`.clodex/iter-<N>-*.{txt,md}`) from pre-v0.2.6 runs are not a
 4. **Review loop** (×max-iter): focus-runner agent → `node "$COMPANION_SCRIPT" adversarial-review` → poll via `status` → fetch via `result --json` → triage → findings-fixer agent → push.
 5. **Report** — includes "did NOT receive codex approval" disclosure for non-approve verdicts, plus copy-pasteable next-step commands.
 
-### Hard rules (v0.2.1+, with v0.2.6 broker-kill exception)
+### Hard rules (v0.3 — reframed Rules 1 and 2)
 
-1. The codex plugin's adversarial-review code path is the only sanctioned review pass. Since codex plugin v1.0.4 all `/codex:*` commands are `disable-model-invocation: true`, so the sanctioned model-side entry point is `node "$COMPANION_SCRIPT" adversarial-review|status|result|cancel` via Bash. No OpenAI `codex` CLI, no custom wrappers around the companion script, no Claude-subagent substitutions.
-2. No writes to plugin internal state (`~/.claude/plugins/data/`). **v0.2.6 exception:** reading `broker.json` and killing the broker PID via PowerShell `Stop-Process` is allowed in two narrow contexts (pre-flight broker wedge recovery, mid-iteration stall recovery) — codex-companion's `ensureBrokerSession` auto-cleans on next call. Process kill is not a state-file write.
-3. Always dispatch the `clodex-focus-runner` agent for Phase 4a (≤3 named failure modes).
-4. Halt and surface on unexpected failures — never improvise an alternative path. (Rule changes like the v0.2.6 broker-kill exception are deliberate version-stamped amendments, not improvisation.)
+1. **Codex is the only review pass.** Underlying call must be `codex-companion.mjs` commands (`adversarial-review`, `status`, `result`, `cancel`). **NEW in v0.3:** invocation mechanics are flexible per documented recovery contract — PowerShell preferred on Windows (avoids MSYS bug + IPC wedge), Bash on Unix. Thin invocation helpers that only normalize shell choice + stdio + retry are allowed (they are NOT "wrappers" in the forbidden sense). Forbidden: OpenAI `codex` CLI, Claude-subagent substitution, thick wrappers that change review behavior.
+2. **Positive contract for plugin-state operations** (v0.3 reframe). Allowed: read any plugin state file; invoke `codex-companion.mjs <command>` via any shell; kill broker PID via PowerShell `Stop-Process` (pre-flight wedge recovery + mid-iteration stall recovery, max 4 kills per run); write to `.clodex/` and implementation files. Forbidden: direct edits to plugin state files, killing non-broker processes by name pattern, anything else under plugin data directories.
+3. Always dispatch the `clodex-focus-runner` agent for Phase 4a (≤3 named failure modes). (Unchanged.)
+4. Halt and surface on unexpected failures — never improvise an alternative path. (Unchanged in substance; v0.3 clarifies that operations in the Rule 2 positive contract are NOT "unexpected" — they're configured fallbacks.)
 
 ### Triggers
 

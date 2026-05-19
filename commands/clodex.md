@@ -58,7 +58,7 @@ Process `$ARGUMENTS` in this order, taking the FIRST applicable branch. Branches
 If `$ARGUMENTS` contains any of `--version`, `-v`, or `-V` as a whole token (anywhere in the args, any order), do EXACTLY this and stop:
 
 ```
-Bash(command: 'printf "clodex@lukas-local v0.2.9\n"', description: "Print clodex version")
+Bash(command: 'printf "clodex@lukas-local v0.3.0\n"', description: "Print clodex version")
 ```
 
 The Bash tool's stdout is the user-visible response. Emit it as-is, with no preamble, no commentary, no surrounding markdown. Do NOT invoke the `clodex` skill. Do NOT add explanatory text. Stop after the Bash output appears.
