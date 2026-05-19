@@ -44,13 +44,16 @@ These rules exist because of real failures in v0.1. Read them once at the start 
    - Do NOT write your own focus text inline and pass it to any entry point other than what `clodex-focus-runner` produces. (Hard rule 3.)
    - If the `/codex:adversarial-review` slash command ever flips back to `disable-model-invocation: false`, switching back to slash-command dispatch is fine — it's functionally identical to the companion-script call. But until then, the companion-script path IS the canonical one for this orchestrator.
 
-2. **Never write to plugin internal state.** Specifically: `~/.claude/plugins/data/`, `~/.claude/plugins/cache/`, plugin `state.json` / `broker.json` / job log files, or any path under another plugin's install tree. If a codex job is stuck and `node "$COMPANION_SCRIPT" cancel <job-id>` does not clear it within 30 seconds, halt and surface — let the user clean up manually. Forcing the state via direct edits can corrupt future codex runs.
+2. **Never write to plugin internal state.** Specifically: `~/.claude/plugins/data/`, `~/.claude/plugins/cache/`, plugin `state.json` / `broker.json` / job log files, or any path under another plugin's install tree. **Reads** of these files (to extract diagnostic metadata like broker PID or endpoint) are explicitly allowed; only writes are forbidden. If a codex job is stuck and `node "$COMPANION_SCRIPT" cancel <job-id>` does not clear it within 30 seconds, proceed to the broker-kill recovery path (HARD_RULES.md v0.2.6 exception). Direct edits to plugin state files remain forbidden — they can corrupt future codex runs.
 
    **Positive form (so the boundary is unambiguous):** clodex writes ONLY to `.clodex/state.json` in the current repository, and to any files the implementation phase legitimately edits. Anything under `~/.claude/plugins/`, `~/AppData/Local/Temp/`, or any other plugin's data directory is OFF-LIMITS for writes. If you find yourself drafting a `Set-Content`, `Out-File`, or any other write that touches one of those paths, stop — that's the rule firing.
 
-   Specific anti-patterns observed in v0.1 incidents:
-   - `Stop-Process -Id <codex_pid> -Force; ...; Set-Content "...\codex-openai-codex\state\...\state.json"` — DO NOT do this. The state file belongs to the codex plugin's broker.
+   **Sanctioned exception (v0.2.6 of HARD_RULES.md, paired with clodex v0.2.8):** killing the broker process by PID via `powershell.exe Stop-Process -Id <pid> -Force` is allowed in two narrow contexts: (a) pre-flight broker wedge recovery when stale-running-jobs are detected, (b) mid-iteration stall recovery (Phase 4c). Read `broker.json` to obtain the PID. `ensureBrokerSession` auto-cleans dead-broker state on the next codex call. See HARD_RULES.md for the full exception statement.
+
+   Specific anti-patterns observed in v0.1 incidents (still forbidden):
+   - `Stop-Process -Id <codex_pid> -Force; ...; Set-Content "...\codex-openai-codex\state\...\state.json"` — DO NOT do this. The sanctioned broker-kill exception kills the broker PID only; it does NOT pair with state-file edits.
    - Manually editing job-record JSON files under `~/.claude/plugins/data/codex-openai-codex/state/<workspace>/jobs/` — DO NOT do this. Surface to user instead.
+   - Killing arbitrary `node.exe` processes by name or by pattern match — DO NOT do this. The exception authorizes killing the broker PID specifically (read from `broker.json`); pattern-based kills risk terminating unrelated processes.
 
 3. **Always dispatch the `clodex-focus-runner` agent for Phase 4a.** Never write the focus text inline in your own context. The agent enforces the focus-content discipline (≤3 named failure modes, trail-heads only, no boilerplate re-statement of the adversarial frame). If you find yourself drafting `(1) Trigger… (2) Pre-submit… (3) TOCTOU…` in your own response, you are off-spec — dispatch the agent instead.
 
@@ -209,7 +212,7 @@ Raw input is in `$ARGUMENTS`. Parse in this order:
    Both branches below MUST use the Bash tool to produce the text. Do NOT generate the help/version output from your own context — `cat`/`printf` output is what gets shown. This guards against the VS Code Claude Code extension's tendency to paraphrase verbose markdown blocks (the terminal CLI emits verbatim correctly; the extension does not).
 
    - **`--version` / `-v` / `-V`** anywhere in `$ARGUMENTS`:
-     Run exactly: `Bash(command: 'printf "clodex@lukas-local v0.2.7\n"', description: "Print clodex version")`. The tool output is the user-visible response. Emit it as-is — no preamble, no commentary, no surrounding markdown. Then STOP.
+     Run exactly: `Bash(command: 'printf "clodex@lukas-local v0.2.8\n"', description: "Print clodex version")`. The tool output is the user-visible response. Emit it as-is — no preamble, no commentary, no surrounding markdown. Then STOP.
 
    - **`--help` / `--about` / `-h`** anywhere in `$ARGUMENTS`:
      1. Resolve the HELP.md path. The plugin install path is at `${CLAUDE_PLUGIN_ROOT}` when set; the help file is at `${CLAUDE_PLUGIN_ROOT}/skills/clodex/HELP.md`. If `$CLAUDE_PLUGIN_ROOT` is unset, fall back to `Glob: ~/.claude/plugins/**/clodex/skills/clodex/HELP.md` and pick the first match (there should be exactly one).
@@ -246,12 +249,12 @@ Severity ranks: `critical=4, high=3, medium=2, low=1`. Threshold ranks add `appr
 
 ## Help / About output
 
-**Canonical source as of v0.2.7:** `skills/clodex/HELP.md` in this plugin. The `--help` short-circuit in parse step 0 above MUST `cat` that file via Bash; do not render this fallback block from your own context.
+**Canonical source as of v0.2.8:** `skills/clodex/HELP.md` in this plugin. The `--help` short-circuit in parse step 0 above MUST `cat` that file via Bash; do not render this fallback block from your own context.
 
 The block reproduced below mirrors HELP.md and exists as a SKILL-internal reference (so reviewers reading SKILL.md can see what users get) and as a fallback if HELP.md is somehow missing. When parse step 0 cannot resolve HELP.md (Glob returns no match), emit the following markdown block verbatim to the user and STOP. Do NOT prepend chatter ("Here's the help…"), do NOT append commentary. Keep HELP.md and this block in sync on every edit.
 
 ````markdown
-`clodex@lukas-local` **v0.2.7** — stalled-iteration breadcrumb (`iter-NNN-stalled.md`) + sharper stall detection (~3 min instead of 10 min)
+`clodex@lukas-local` **v0.2.8** — pre-flight broker wedge detection + auto-recovery (kill broker PID, retry stalled iteration once before escalating)
 
 ## /clodex — Autonomous Plan → Ship → Review → Fix Loop
 
@@ -397,7 +400,9 @@ After Phase 1 (and after every later phase that changes state), write `.clodex/s
 }
 ```
 
-`findings_history[i]` records iteration `i`'s codex output (compact): `{ iteration, job_id, verdict, summary, counts: {critical, high, medium, low}, blocking_count, committed_fix_sha, review_method, focus_path, codex_json_path, review_path, fix_path, stalled_breadcrumb_path }`. The five `*_path` fields point at the canonical per-iteration files under `.clodex/runs/<branch-slug>/` (see "Persist artifacts to disk" in Context budget discipline). `focus_path` is always populated. `codex_json_path` + `review_path` are populated when codex produced a verdict (regardless of whether findings-fixer ran); they are `null` on stalled/error/hang. `fix_path` is `null` unless the findings-fixer was dispatched (verdict was `needs-attention` with blocking findings). `stalled_breadcrumb_path` is `null` unless the iteration ended with verdict in `{stalled, error, codex-reproducible-hang}`. The pairing `(codex_json_path != null) XOR (stalled_breadcrumb_path != null)` holds for every iteration that completed any way at all — if both are null, the orchestrator halted before launching codex (no useful state to inspect).
+`findings_history[i]` records iteration `i`'s codex output (compact): `{ iteration, job_id, verdict, summary, counts: {critical, high, medium, low}, blocking_count, committed_fix_sha, review_method, focus_path, codex_json_path, review_path, fix_path, stalled_breadcrumb_path, broker_recovery_attempted, broker_pid_killed, retried_after_broker_recovery }`. The five `*_path` fields point at the canonical per-iteration files under `.clodex/runs/<branch-slug>/` (see "Persist artifacts to disk" in Context budget discipline). `focus_path` is always populated. `codex_json_path` + `review_path` are populated when codex produced a verdict (regardless of whether findings-fixer ran); they are `null` on stalled/error/hang. `fix_path` is `null` unless the findings-fixer was dispatched (verdict was `needs-attention` with blocking findings). `stalled_breadcrumb_path` is `null` unless the iteration ended with verdict in `{stalled, error, codex-reproducible-hang}`. The pairing `(codex_json_path != null) XOR (stalled_breadcrumb_path != null)` holds for every iteration that completed any way at all — if both are null, the orchestrator halted before launching codex (no useful state to inspect).
+
+The three `broker_*` fields (v0.2.8+) record automated broker recovery: `broker_recovery_attempted: bool` (true if the v0.2.8 stalled-handling kill-and-retry path fired), `broker_pid_killed: number | null` (the PID actually terminated), `retried_after_broker_recovery: bool` (true if this iteration was relaunched after a broker recovery — if the retry also stalled, the verdict escalates to `codex-reproducible-hang`).
 
 `review_method` is required (see "State file: per-iteration `review_method`" in Phase 4c).
 
@@ -422,7 +427,7 @@ Create `.clodex/` if it doesn't exist. Add `.clodex/` to `.gitignore` if not alr
 **Before the first pre-flight tool call,** emit a single banner line to chat so the user can verify which plugin version is active without reading the help block:
 
 ```
-[clodex v0.2.7] starting <run-type>: <task description, truncated to 80 chars>
+[clodex v0.2.8] starting <run-type>: <task description, truncated to 80 chars>
 ```
 
 `<run-type>` is one of `new task`, `--resume`, `--continue`. For `--resume` / `--continue`, the task description comes from `state.json`. Update this version string whenever the plugin version bumps — it's the user's only quick verification that the new version actually loaded.
@@ -431,7 +436,7 @@ Create `.clodex/` if it doesn't exist. Add `.clodex/` to `.gitignore` if not alr
 
 1. Resolve `<plugin>` via `Glob ~/.claude/plugins/**/clodex/skills/clodex/HARD_RULES.md` (pick the first/only match).
 2. Run `Bash(command: 'cat "<resolved-path>"', description: "Read fresh hard rules")` and treat its stdout as the authoritative hard-rules text for this run (see "Hard rules — NEVER violate these" section above). If the rules in your loaded SKILL.md context conflict with this fresh read, the fresh read wins — your loaded SKILL.md may be stale.
-3. Append the HARD_RULES.md version line (last line of the file) to the banner: `[clodex v0.2.7 / hard-rules v0.2.5] starting ...` (re-emit the banner with both versions; this lets the user spot the case where SKILL.md and HARD_RULES.md are out of sync. Plugin version (v0.2.7) and hard-rules version (v0.2.5) can legitimately differ — they're bumped independently. Plugin version bumps whenever any file changes; hard-rules version bumps only when the rules themselves change.).
+3. Append the HARD_RULES.md version line (last line of the file) to the banner: `[clodex v0.2.8 / hard-rules v0.2.6] starting ...` (re-emit the banner with both versions; this lets the user spot the case where SKILL.md and HARD_RULES.md are out of sync. Plugin version (v0.2.8) and hard-rules version (v0.2.6) can legitimately differ — they're bumped independently. Plugin version bumps whenever any file changes; hard-rules version bumps only when the rules themselves change. v0.2.6 of hard-rules adds the broker-kill exception under Rule 2.).
 
 Then run these in parallel:
 
@@ -448,6 +453,101 @@ If any check fails, stop and surface a one-line explanation to the user. Do not 
 If `Glob` returns multiple `codex-companion.mjs` matches (rare — would only happen with multiple codex plugin installs), pick the one whose path matches the same plugin install as the `adversarial-review.md` you just confirmed. The two MUST come from the same plugin root, or the companion-script invocation won't match the slash-command's framing.
 
 If there are uncommitted changes on a non-main branch: this is the user's in-progress work. Default to including those changes in the clodex run (treat them as the starting point of the implementation). Only stash/discard with explicit user instruction.
+
+### Pre-flight broker wedge recovery (v0.2.8 — runs after parallel checks complete)
+
+The codex-companion broker is per-workspace (per `state.json`) and can wedge after certain Windows IPC pipe failures (upstream issue: openai/codex-plugin-cc#330). Once wedged, the broker still answers `endpoint ready?` pings, so codex-companion's `ensureBrokerSession` reuses it — and every new codex job through the wedged broker stalls the same way. The clean recovery is to kill the broker PID; `ensureBrokerSession` then auto-spawns a fresh broker on the next codex call.
+
+Run this check now, AFTER the parallel pre-flight checks above and BEFORE Phase 1 (or before re-entering Phase 4 on `--resume` / `--continue`):
+
+```bash
+# Query broker for stale running jobs. A job is "stale" if updatedAt > 5 minutes ago.
+STATUS_RAW=$(node "$COMPANION_SCRIPT" status --all --json 2>/dev/null)
+
+# Extract logFile from the first available job (running, latestFinished, or recent).
+# logFile path encodes the broker's state-dir: <state-dir>/jobs/<job-id>.log → state-dir = dirname(dirname(logFile)).
+# broker.json lives at <state-dir>/broker.json.
+LOGFILE=$(printf '%s' "$STATUS_RAW" | node -e "
+let raw = '';
+process.stdin.on('data', (c) => raw += c);
+process.stdin.on('end', () => {
+  try {
+    const j = JSON.parse(raw);
+    const job = (j.running && j.running[0]) || j.latestFinished || (j.recent && j.recent[0]) || null;
+    if (job && job.logFile) process.stdout.write(job.logFile);
+  } catch {}
+});
+")
+
+if [ -z "$LOGFILE" ]; then
+  # No jobs visible in broker — broker is fresh or doesn't exist yet. Nothing to recover.
+  echo "[clodex pre-flight] broker has no recorded jobs; nothing to recover."
+else
+  STATE_DIR=$(dirname "$(dirname "$LOGFILE")")
+  BROKER_JSON="$STATE_DIR/broker.json"
+  if [ ! -f "$BROKER_JSON" ]; then
+    echo "[clodex pre-flight] broker.json not found at $BROKER_JSON; broker may be in transitional state. Skipping recovery."
+  else
+    # Count stale running jobs (updatedAt > 5 min ago).
+    WEDGED_COUNT=$(printf '%s' "$STATUS_RAW" | node -e "
+let raw = '';
+process.stdin.on('data', (c) => raw += c);
+process.stdin.on('end', () => {
+  try {
+    const j = JSON.parse(raw);
+    const running = j.running || [];
+    const now = Date.now();
+    const wedged = running.filter((job) => {
+      if (!job.updatedAt) return false;
+      const age = now - new Date(job.updatedAt).getTime();
+      return age > 5 * 60 * 1000;
+    });
+    process.stdout.write(String(wedged.length));
+  } catch { process.stdout.write('0'); }
+});
+")
+
+    if [ "$WEDGED_COUNT" -gt 0 ]; then
+      BROKER_PID=$(node -e "
+try {
+  const broker = JSON.parse(require('fs').readFileSync('$BROKER_JSON', 'utf8'));
+  process.stdout.write(String(broker.pid || ''));
+} catch { process.stdout.write(''); }
+")
+      if [ -n "$BROKER_PID" ] && [ "$BROKER_PID" != "null" ]; then
+        echo "[clodex pre-flight] WEDGED BROKER DETECTED: $WEDGED_COUNT stale running job(s). Killing broker PID $BROKER_PID; ensureBrokerSession will respawn fresh on next codex call."
+        powershell.exe -NoProfile -Command "Stop-Process -Id $BROKER_PID -Force -ErrorAction SilentlyContinue" 2>/dev/null
+        sleep 2
+        # Verify broker is gone — re-check status; should report fewer running jobs OR show empty
+        STATUS_AFTER=$(node "$COMPANION_SCRIPT" status --all --json 2>/dev/null | node -e "
+let raw = '';
+process.stdin.on('data', (c) => raw += c);
+process.stdin.on('end', () => {
+  try {
+    const j = JSON.parse(raw);
+    process.stdout.write(String((j.running || []).length));
+  } catch { process.stdout.write('?'); }
+});
+")
+        echo "[clodex pre-flight] post-kill: $STATUS_AFTER running job(s) remain (expected: 0 or fewer than $WEDGED_COUNT)."
+      else
+        echo "[clodex pre-flight] wedged jobs detected but no broker PID extractable — surface to user instead of guessing."
+      fi
+    else
+      echo "[clodex pre-flight] broker appears healthy (no stale running jobs found)."
+    fi
+  fi
+fi
+```
+
+**What this does (and what it does NOT do):**
+
+- **DOES:** Read `broker.json` (read-only, allowed under Hard Rule 2's "no writes" formulation). Kill the broker process PID via PowerShell `Stop-Process` (a process operation, not a state-file write — `ensureBrokerSession` handles broker death cleanly by tearing down stale state on next call).
+- **DOES NOT:** Edit `broker.json`, `state.json`, any job log files, or any other file under `~/.claude/plugins/data/`. The codex-companion code is designed to auto-recover from a killed broker on the next call.
+
+If no wedged jobs are detected, this step is a no-op (just emits a "healthy" line).
+
+If wedged jobs are detected but the recovery fails (Stop-Process errored, broker PID missing, or post-kill status still shows the same wedged jobs): halt and surface to the user with the broker.json path, broker PID, and a copy-pasteable PowerShell command. Do NOT improvise other recovery paths (Hard Rule 4 still applies — the rule-2 exception is narrow and only covers the documented kill path above).
 
 ## Phase 1 — Brainstorm + plan
 
@@ -685,21 +785,45 @@ Retry once: wait 60s, re-run `node "$COMPANION_SCRIPT" status <job-id>`. If the 
 
 Do this retry at most once per iteration. If you retried earlier this iteration and the new check errors again, halt immediately — repeated transient errors are no longer transient.
 
-#### Stalled handling (10-min cap, early stall detection, or repeated errors)
+#### Stalled handling (10-min cap, early stall detection, or repeated errors) — v0.2.8 auto-recovery flow
 
 When you hit any of: the 10-min cap (`TIMEOUT` from the poll loop), early stall detection (`STALL_DETECTED` from the poll loop), repeated transient `status` errors, or a terminal `failed`/`cancelled` state from the broker:
 
-1. Invoke `node "$COMPANION_SCRIPT" cancel <job-id>` once. Give it up to 30 seconds.
-2. Re-check `node "$COMPANION_SCRIPT" status <job-id>`. If the job is no longer running, good.
-3. If the job is STILL running after the cancel: surface to the user with the job ID, the elapsed time, and explicit copy-pasteable PowerShell to investigate. Do NOT attempt to kill the process directly, do NOT edit any plugin state file, do NOT touch `~/.claude/plugins/data/`. (See Hard rule 2.)
+**Auto-recovery (v0.2.8): try once before declaring this iteration stalled.**
 
-   On Windows with Git Bash, `codex-companion`'s `taskkill /PID <pid> /T /F` fallback has been observed to fail because MSYS translates the `/PID` argument to `C:/Program Files/Git/PID`. When `cancel` stderr contains the literal `'C:/Program Files/Git/PID'` substring, the recovery command for the user is `Stop-Process -Id <pid> -Force` from PowerShell (NOT Git Bash). Include both the broker-reported PID and that exact command in the breadcrumb and Phase 5 report.
-4. Decide which verdict to set:
-   - **`codex-reproducible-hang`** if this is the 2nd consecutive iteration where codex stalled at substantially the same phase (e.g., both iterations ran diff-exploration commands for ~1 min then went silent, never produced synthesis output). Check `state.findings_history` for the prior iteration's `verdict` — if it was `stalled` and the failure shape matches, escalate to `codex-reproducible-hang`. This is a stronger signal than a one-off stall: the diff itself is exceeding codex's synthesis budget on this machine, and more iterations on the same branch will hang the same way.
-   - **`stalled`** if this is the first such failure or the failure shape differs from the prior iteration.
-5. Write `last_codex_job_id`, the per-iteration `review_method` (see "State file: per-iteration review_method"), and a Phase-5-equivalent stalled report.
+The first time an iteration stalls in a given clodex run, attempt a single automated recovery — kill the broker, then retry the SAME iteration with the same focus. If the second attempt also stalls, escalate to permanent stall handling below. This gives clodex one chance to clear a wedged broker without involving the user, while still avoiding infinite loops.
 
-6. **Write the stalled-iteration breadcrumb** to `.clodex/runs/<branch-slug>/iter-<padded-N>-stalled.md`. This file is the disk-level record of *why* this iteration produced no `codex.json` or `review.md` — six months later, someone navigating the runs directory should be able to open it and immediately understand what happened. Use this template:
+1. Invoke `node "$COMPANION_SCRIPT" cancel <job-id>` once. Give it up to 30 seconds. On Windows with Git Bash, `codex-companion`'s `taskkill /PID <pid> /T /F` fallback has been observed to fail because MSYS translates `/PID` → `C:/Program Files/Git/PID`. When `cancel` stderr contains `'C:/Program Files/Git/PID'`, the fallback failed but the broker may still be killable via the broker-kill step below.
+
+2. Re-check `node "$COMPANION_SCRIPT" status <job-id>`. If the job is no longer `running`/`queued`, good — proceed to step 4.
+
+3. **Broker kill recovery (sanctioned per Hard Rule 2 exception — see HARD_RULES.md):** if this is the FIRST stall this run AND the job is still wedged, kill the broker PID (same mechanism as the pre-flight broker recovery section):
+
+   ```bash
+   # Reuse the broker-kill block from "Pre-flight broker wedge recovery" above —
+   # find broker.json via the wedged job's logFile, read broker.pid, Stop-Process the PID.
+   # codex-companion's ensureBrokerSession will respawn a fresh broker on the next codex call.
+   ```
+
+   Record on the iteration's `findings_history` entry: `broker_recovery_attempted: true`, `broker_pid_killed: <pid>`.
+
+4. **Retry decision.** Check `state.findings_history` for prior `broker_recovery_attempted: true` entries in THIS run. If this is the first such attempt, retry the SAME iteration with the same focus file (`.clodex/runs/<branch-slug>/iter-<padded-N>-focus.md`) — re-launch via Phase 4b with the same `iter-<padded-N>-focus.md` content, do NOT re-dispatch the focus-runner (the focus is already on disk and is what we want to validate against). The fresh broker spawned by `ensureBrokerSession` should service the retried job cleanly. Record the retry in state as `findings_history[i].retried_after_broker_recovery: true`.
+
+5. If this iteration has ALREADY been retried after a broker-recovery attempt (i.e. `findings_history[i].retried_after_broker_recovery: true` is set), do NOT retry again — escalate to the permanent-stall handling below. The recovery clearly didn't take; further retries are wasted budget.
+
+6. If the broker-kill recovery step was skipped (e.g. the cancel cleared the job cleanly without needing it), skip the retry — proceed directly to the permanent-stall handling below.
+
+**Permanent stall handling (when auto-recovery doesn't clear it, or has already been attempted):**
+
+7. If the job is STILL running after cancel + broker-kill recovery (OR the retry in step 4 also stalled): surface to the user with the job ID, the elapsed time, and explicit copy-pasteable PowerShell to investigate. Do NOT improvise additional recovery paths beyond the documented broker-kill (Hard Rule 4 + Hard Rule 2 still bound everything else). Include both the broker-reported PID and `Stop-Process -Id <pid> -Force` in the breadcrumb and Phase 5 report.
+
+8. Decide which verdict to set:
+   - **`codex-reproducible-hang`** if EITHER this is the 2nd consecutive iteration where codex stalled at substantially the same phase, OR this iteration was already retried after a broker-recovery attempt and stalled again. Check `state.findings_history` for the prior iteration's `verdict` AND the current iteration's `retried_after_broker_recovery` flag — if either condition fires, escalate to `codex-reproducible-hang`. The diff itself is the suspect (exceeding codex's synthesis budget OR triggering an irrecoverable upstream IPC pattern); more iterations on the same branch will hang the same way.
+   - **`stalled`** if this is the first such failure, the failure shape differs from the prior iteration, AND auto-recovery has not yet been attempted (which would be unusual — auto-recovery is the default path now).
+
+9. Write `last_codex_job_id`, the per-iteration `review_method` (see "State file: per-iteration review_method"), `broker_recovery_attempted`, `broker_pid_killed`, and `retried_after_broker_recovery` (if applicable) to the iteration's `findings_history` entry. Persist a Phase-5-equivalent stalled report.
+
+10. **Write the stalled-iteration breadcrumb** to `.clodex/runs/<branch-slug>/iter-<padded-N>-stalled.md`. This file is the disk-level record of *why* this iteration produced no `codex.json` or `review.md` — six months later, someone navigating the runs directory should be able to open it and immediately understand what happened. Use this template:
 
    ````markdown
    # iter-NNN — codex adversarial review stalled
@@ -727,8 +851,17 @@ When you hit any of: the 10-min cap (`TIMEOUT` from the poll loop), early stall 
    ```
 
    <if MSYS path mangling detected in cancel stderr:>
-   _Detected the `'C:/Program Files/Git/PID'` MSYS path-translation signature in cancel stderr — this is a known Git Bash compat issue in `codex-companion`'s `taskkill` fallback. See user recovery below._
+   _Detected the `'C:/Program Files/Git/PID'` MSYS path-translation signature in cancel stderr — this is a known Git Bash compat issue in `codex-companion`'s `taskkill` fallback. The v0.2.8 broker-kill recovery (below) uses PowerShell `Stop-Process` directly, bypassing this._
    <end if>
+
+   ## Recovery attempt (v0.2.8 auto-recovery)
+
+   - **Broker recovery attempted:** <yes / no>
+   - **Broker PID killed:** <pid | n/a — no wedged broker detected>
+   - **Retry after recovery:** <yes / no>
+   - **Retry outcome:** <succeeded — codex completed iter <N> on retry | failed — second attempt also stalled, escalated to codex-reproducible-hang | not applicable — cancel cleared without needing broker kill>
+
+   If the retry succeeded, no breadcrumb would be written for this iteration — the iter would have a `codex.json`+`review.md` instead. Presence of this breadcrumb means recovery did NOT take.
 
    ## User-side recovery
 
@@ -762,8 +895,8 @@ When you hit any of: the 10-min cap (`TIMEOUT` from the poll loop), early stall 
 
 Different verdicts surface different next-step suggestions in the report:
 
-- `stalled` → suggest `/clodex --continue` after the user clears the stuck job
-- `codex-reproducible-hang` → do NOT suggest a plain `--continue` (codex will hang again on the same diff). Suggest one of: split the PR into smaller pieces; re-run with a tighter focus targeting a single commit (`--scope commit:<sha>`); run `/codex:adversarial-review --base main` manually from the user's chat (no custom focus — the default template often succeeds where a custom focus stalls). The slash command runs fine from a user-initiated turn — it's only blocked from model auto-invocation.
+- `stalled` → (v0.2.8: rare — the auto-recovery path now handles most stalls inline) suggest `/clodex --continue` after the user clears any stuck job. Include the verbatim broker-recovery outcome from the breadcrumb so the user can see what was tried.
+- `codex-reproducible-hang` → v0.2.8's broker-kill recovery has already been attempted and did not clear the wedge. Do NOT suggest a plain `--continue` — the upstream issue (codex-plugin-cc#330) is structural and re-attempting the same call against this Claude Code window's broker is likely to re-wedge. Suggest, in order of likelihood: (a) split the PR into smaller pieces and run clodex on each in a fresh window; (b) re-run with a tighter focus targeting a single commit (`--scope commit:<sha>`) in a fresh window; (c) as a last resort, run `/codex:adversarial-review --base main` manually from a user-initiated turn in a fresh window. **All three suggestions involve opening a fresh Claude Code window** — the codex-companion broker pollution can persist at the session level even after the in-process broker is killed, because the underlying named-pipe state may be tied to the parent Claude Code session.
 
 #### State file: per-iteration `review_method`
 

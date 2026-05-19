@@ -1,4 +1,4 @@
-`clodex@lukas-local` **v0.2.7** — stalled-iteration breadcrumb (`iter-NNN-stalled.md`) + sharper stall detection (~3 min instead of 10 min)
+`clodex@lukas-local` **v0.2.8** — automated broker wedge detection + recovery (pre-flight kills wedged broker; mid-iteration stall auto-retries once before escalating)
 
 ## /clodex — Autonomous Plan → Ship → Review → Fix Loop
 
@@ -116,12 +116,12 @@ Legacy flat files (`.clodex/iter-<N>-*.{txt,md}`) from pre-v0.2.6 runs are not a
 4. **Review loop** (×max-iter): focus-runner agent → `node "$COMPANION_SCRIPT" adversarial-review` → poll via `status` → fetch via `result --json` → triage → findings-fixer agent → push.
 5. **Report** — includes "did NOT receive codex approval" disclosure for non-approve verdicts, plus copy-pasteable next-step commands.
 
-### Hard rules (v0.2.1+)
+### Hard rules (v0.2.1+, with v0.2.6 broker-kill exception)
 
 1. The codex plugin's adversarial-review code path is the only sanctioned review pass. Since codex plugin v1.0.4 all `/codex:*` commands are `disable-model-invocation: true`, so the sanctioned model-side entry point is `node "$COMPANION_SCRIPT" adversarial-review|status|result|cancel` via Bash. No OpenAI `codex` CLI, no custom wrappers around the companion script, no Claude-subagent substitutions.
-2. No writes to plugin internal state (`~/.claude/plugins/data/`).
+2. No writes to plugin internal state (`~/.claude/plugins/data/`). **v0.2.6 exception:** reading `broker.json` and killing the broker PID via PowerShell `Stop-Process` is allowed in two narrow contexts (pre-flight broker wedge recovery, mid-iteration stall recovery) — codex-companion's `ensureBrokerSession` auto-cleans on next call. Process kill is not a state-file write.
 3. Always dispatch the `clodex-focus-runner` agent for Phase 4a (≤3 named failure modes).
-4. Halt and surface on unexpected failures — never improvise an alternative path.
+4. Halt and surface on unexpected failures — never improvise an alternative path. (Rule changes like the v0.2.6 broker-kill exception are deliberate version-stamped amendments, not improvisation.)
 
 ### Triggers
 
