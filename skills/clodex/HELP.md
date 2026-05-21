@@ -1,4 +1,4 @@
-`clodex@lukas-local` **v0.3.1** — REVERT of the v0.3.0 PowerShell-preferred pivot. Bash is canonical again for all codex-companion invocations (matches the proven-working May 14 PR #77 pattern). Single-retry broker-wedge recovery restored (was: 3-retry exponential backoff). Phase 0.6 orphaned-state cleanup preserved (now Bash-invoked, surfaces MSYS bug per Rule 4 instead of silently re-routing to PowerShell). PowerShell retained only as the narrow `Stop-Process` carve-out for broker-kill recovery. Paired with HARD_RULES.md v0.3.1.
+`clodex@lukas-local` **v0.3.2** — Adds `--from-pr [<num>]` flag for mid-development PR handoff: bootstraps `.clodex/state.json` from an existing open GitHub PR and jumps directly to Phase 4 (review-fix loop), skipping Phases 1–3 entirely. Designed for the workflow where plan + implement + ship were done outside clodex and only the review-fix loop is wanted. v0.3.1 reverted the v0.3.0 PowerShell-preferred pivot — Bash remains canonical for all codex-companion invocations. Single-retry broker-wedge recovery preserved. PowerShell retained only as the narrow `Stop-Process` carve-out for broker-kill recovery. Paired with HARD_RULES.md v0.3.1 (unchanged — `--from-pr` writes only to `.clodex/`, already allowed under Rule 2's positive contract).
 
 ## /clodex — Autonomous Plan → Ship → Review → Fix Loop
 
@@ -19,6 +19,7 @@ Take a task from "described" to "codex-approved + PR open" without babysitting. 
 
 ```
 /clodex <task description> [thinking-level] [flags]
+/clodex --from-pr [<num>] [<task description>] [thinking-level] [flags]
 /clodex --resume
 /clodex --continue [override flags]
 /clodex --help | --about | -h
@@ -33,6 +34,7 @@ Take a task from "described" to "codex-approved + PR open" without babysitting. 
 | `--threshold X` | `medium` | highest **acceptable** severity: `approve` \| `low` \| `medium` \| `high` \| `critical` |
 | `--skip-brainstorm` | off | skip Phase 1 plan + brainstorm; use forge inline |
 | `--context-tight` | off | recommend session split at every Phase 4 iteration boundary |
+| `--from-pr [<num>]` | — | bootstrap state from existing PR and jump to Phase 4 (skips Phases 1–3); auto-detects PR if `<num>` omitted; mutually exclusive with `--resume` / `--continue` / `--reset-review-iter` / `--skip-brainstorm` |
 | `--resume` | — | continue an interrupted run (no config overrides accepted) |
 | `--continue` | — | extend a finished/stalled run; accepts `--max-iter`, `--threshold`, thinking-level overrides |
 | `--reset-review-iter` | — | with `--continue`, reset iteration counter to 0 |
@@ -80,6 +82,12 @@ A finding blocks iff its severity rank is strictly greater than the threshold ra
 # Large PR, plan for multi-session up front
 /clodex Implement OIDC auth ultrathink --max-iter 8 --context-tight
 
+# Already shipped a PR outside clodex — just want the review-fix loop on it
+/clodex --from-pr 86 --max-iter 5 --threshold medium
+
+# Same, with explicit task description (overrides PR title)
+/clodex --from-pr 86 "Read-only viewer admin role" --max-iter 5 --threshold medium
+
 # Extend a finished run with more budget, loosening threshold (accept high+medium+low)
 /clodex --continue --max-iter 10 --threshold high
 
@@ -110,11 +118,13 @@ Legacy flat files (`.clodex/iter-<N>-*.{txt,md}`) from pre-v0.2.6 runs are not a
 
 ### Phase outline
 
-1. **Brainstorm + plan** — `superpowers:brainstorming`, `superpowers:writing-plans`. Skip with `--skip-brainstorm`.
-2. **Branch + implement** — `new-branch`, then `superpowers:executing-plans` (plan-driven) or `forge` (plan-less).
-3. **Ship** — `/ship` opens the PR.
+1. **Brainstorm + plan** — `superpowers:brainstorming`, `superpowers:writing-plans`. Skip with `--skip-brainstorm`. Skipped entirely with `--from-pr`.
+2. **Branch + implement** — `new-branch`, then `superpowers:executing-plans` (plan-driven) or `forge` (plan-less). Skipped entirely with `--from-pr`.
+3. **Ship** — `/ship` opens the PR. Skipped entirely with `--from-pr` (the PR already exists).
 4. **Review loop** (×max-iter): focus-runner agent → `node "$COMPANION_SCRIPT" adversarial-review` → poll via `status` → fetch via `result --json` → triage → findings-fixer agent → push.
-5. **Report** — includes "did NOT receive codex approval" disclosure for non-approve verdicts, plus copy-pasteable next-step commands.
+5. **Report** — includes "did NOT receive codex approval" disclosure for non-approve verdicts, plus copy-pasteable next-step commands. With `--from-pr`, also includes a one-line preamble noting the bootstrap origin.
+
+With `--from-pr`, Phase 0.7 (bootstrap from existing PR) runs in pre-flight: validates the PR is OPEN, validates the local branch + HEAD SHA match the PR's head, then writes `.clodex/state.json` with `bootstrapped_from_pr: true` and jumps directly to Phase 4.
 
 ### Hard rules (v0.3.1 — REVERT of v0.3 PowerShell pivot; Bash-mandatory)
 

@@ -8,6 +8,7 @@ description: |
     --threshold X          highest acceptable severity: approve|low|medium|high|critical  (default: medium)
     --skip-brainstorm      skip Phase 1 plan + brainstorm; use forge inline
     --context-tight        recommend session split at every Phase 4 iteration boundary
+    --from-pr [<num>]      bootstrap state from existing PR and jump to Phase 4 (skips Phases 1-3)
     --resume               continue an interrupted run (no config overrides)
     --continue             extend a finished/stalled run (accepts override flags)
     --reset-review-iter    with --continue, reset iteration counter to 0
@@ -17,10 +18,11 @@ description: |
 
   EXAMPLE
     /clodex Add delete option for submissions in draft state think harder --max-iter 5 --threshold medium
+    /clodex --from-pr 86 --max-iter 5 --threshold medium
 
   HELP  /clodex --help   (full reference in-session if this tooltip is truncated)
   TRIGGERS  /clodex <task>, "ralph this", "run the codex loop on X", "automate the review-fix cycle for X".
-argument-hint: "<task description> [think|think hard|think harder|ultrathink] [--max-iter N] [--threshold approve|low|medium|high|critical] [--skip-brainstorm] [--context-tight] [--resume] [--continue [--reset-review-iter]]"
+argument-hint: "<task description> [think|think hard|think harder|ultrathink] [--max-iter N] [--threshold approve|low|medium|high|critical] [--skip-brainstorm] [--context-tight] [--from-pr [<num>] [<task description>]] [--resume] [--continue [--reset-review-iter]]"
 ---
 
 # Clodex — Autonomous Plan → Ship → Review → Fix Loop
@@ -234,7 +236,7 @@ Raw input is in `$ARGUMENTS`. Parse in this order:
    Both branches below MUST use the Bash tool to produce the text. Do NOT generate the help/version output from your own context — `cat`/`printf` output is what gets shown. This guards against the VS Code Claude Code extension's tendency to paraphrase verbose markdown blocks (the terminal CLI emits verbatim correctly; the extension does not).
 
    - **`--version` / `-v` / `-V`** anywhere in `$ARGUMENTS`:
-     Run exactly: `Bash(command: 'printf "clodex@lukas-local v0.3.0 (skill fallback path — commands/clodex.md should have caught this)\n"', description: "Print clodex version (fallback)")`. The tool output is the user-visible response. Emit it as-is — no preamble, no commentary, no surrounding markdown. Then STOP.
+     Run exactly: `Bash(command: 'printf "clodex@lukas-local v0.3.2 (skill fallback path — commands/clodex.md should have caught this)\n"', description: "Print clodex version (fallback)")`. The tool output is the user-visible response. Emit it as-is — no preamble, no commentary, no surrounding markdown. Then STOP.
 
    - **`--help` / `--about` / `-h`** anywhere in `$ARGUMENTS`:
      1. Resolve the HELP.md path. The plugin install path is at `${CLAUDE_PLUGIN_ROOT}` when set; the help file is at `${CLAUDE_PLUGIN_ROOT}/skills/clodex/HELP.md`. If `$CLAUDE_PLUGIN_ROOT` is unset, fall back to `Glob: ~/.claude/plugins/**/clodex/skills/clodex/HELP.md` and pick the first match (there should be exactly one).
@@ -249,15 +251,16 @@ Raw input is in `$ARGUMENTS`. Parse in this order:
    - `--threshold {approve|low|medium|high|critical}` (default: `medium`) — highest severity that is **acceptable** (non-blocking). Findings strictly above this severity block the ship. Special value `approve` means "nothing is acceptable" — the loop only exits cleanly on a true codex `approve` verdict.
    - `--skip-brainstorm` — skip Phase 1 brainstorming, go straight to plan
    - `--context-tight` — make the orchestrator aggressive about session-split recommendations. With this set, the iteration-start self-check (see Phase 4) recommends `/clear` + `/clodex --resume` at every iteration boundary, regardless of estimated context use. Useful for large PRs where the user knows in advance they'll span multiple sessions. Persists in state so `--resume` continues honouring it without needing to be re-passed.
+   - `--from-pr [<num>]` — bootstrap a fresh `.clodex/state.json` from an existing GitHub PR and jump directly to Phase 4 (review-fix loop). Skips Phases 1–3 entirely; intended for the "plan + implement + ship were done outside clodex; only the review-fix loop is wanted" workflow. Optional `<num>` is the PR number; if omitted, auto-detects via `gh pr view --json` on the current branch. Sets `bootstrapped_from_pr: true` in state for forensic traceability. Mutually exclusive with `--resume`, `--continue`, `--reset-review-iter`, and `--skip-brainstorm` — halt with a one-line explanation if combined. Halts if `.clodex/state.json` already exists (use `--continue --reset-review-iter` to extend, or delete the file to start fresh). Halts if the current branch does not match the PR's head branch or if local HEAD SHA ≠ PR head SHA (per Rule 4: don't auto-checkout or auto-pull; the user may have uncommitted work). Implemented in Phase 0.7 below.
    - `--resume` — read `.clodex/state.json` and continue an **interrupted** prior run (verdict still null / in-progress). Does NOT accept overrides; restores the prior config as-is.
    - `--continue` — explicitly extend a **finished or off-rails** prior run (verdict is one of `approve`, `threshold-satisfied`, `max-iter-hit`, `stalled`, `error`, `no-diff`, or null but iteration > 0 with an existing branch+PR). Accepts overrides via `--max-iter` / `--threshold` / thinking-level. Reset verdict to null, archive prior `findings_history` into `prior_runs`, and re-enter Phase 4.
    - `--reset-review-iter` — only valid with `--continue`. Resets `iteration` to 0 and starts the review counter fresh under the new `max_iter`. Without it, `--continue` resumes at `state.iteration + 1` (capped at the new `max_iter`).
 2. Thinking level token (anywhere in remaining args): `think` | `think hard` | `think harder` | `ultrathink`. Default: `think hard`. Match longest first (`think harder` before `think hard` before `think`).
 3. Everything else, in order, joined with single spaces = the **task description**.
 
-If the task description is empty and neither `--resume` nor `--continue` is set, stop and ask the user for the task.
+If the task description is empty and none of `--resume`, `--continue`, or `--from-pr` is set, stop and ask the user for the task. (With `--from-pr`, an absent task description is fine — Phase 0.7 defaults it to the PR title.)
 
-`--resume` and `--continue` are mutually exclusive. If both are passed, halt with an error explaining the distinction.
+`--resume`, `--continue`, and `--from-pr` are pairwise mutually exclusive. If any two are passed together, halt with an error explaining the distinction. `--from-pr` is additionally incompatible with `--skip-brainstorm` (no brainstorm phase to skip in a bootstrapped run) and with `--reset-review-iter` (which is a `--continue` modifier; bootstrap always starts at iteration 0).
 
 Threshold is **inclusive** — the value names the highest severity that is acceptable as non-blocking. A finding blocks iff its severity rank is strictly greater than the threshold rank.
 
@@ -276,7 +279,7 @@ Severity ranks: `critical=4, high=3, medium=2, low=1`. Threshold ranks add `appr
 The block reproduced below mirrors HELP.md and exists as a SKILL-internal reference (so reviewers reading SKILL.md can see what users get) and as a fallback if HELP.md is somehow missing. When parse step 0 cannot resolve HELP.md (Glob returns no match), emit the following markdown block verbatim to the user and STOP. Do NOT prepend chatter ("Here's the help…"), do NOT append commentary. Keep HELP.md and this block in sync on every edit.
 
 ````markdown
-`clodex@lukas-local` **v0.3.1** — REVERT of the v0.3.0 PowerShell-preferred pivot. Bash is canonical again for all codex-companion invocations (matches the proven-working May 14 PR #77 pattern). Single-retry broker-wedge recovery restored (was: 3-retry exponential backoff). Phase 0.6 orphaned-state cleanup preserved (now Bash-invoked, surfaces MSYS bug per Rule 4). PowerShell retained only as the narrow `Stop-Process` carve-out for broker-kill. Paired with HARD_RULES.md v0.3.1.
+`clodex@lukas-local` **v0.3.2** — Adds `--from-pr [<num>]` flag for mid-development PR handoff (bootstraps state from an existing PR and jumps straight to Phase 4, skipping plan/implement/ship). v0.3.1 reverted the v0.3.0 PowerShell-preferred pivot — Bash remains canonical for all codex-companion invocations. Single-retry broker-wedge recovery (kill + retry once, then escalate to `codex-reproducible-hang`). PowerShell retained only as the narrow `Stop-Process` carve-out for broker-kill. Paired with HARD_RULES.md v0.3.1 (unchanged — `--from-pr` writes to `.clodex/`, already allowed under Rule 2's positive contract).
 
 ## /clodex — Autonomous Plan → Ship → Review → Fix Loop
 
@@ -297,6 +300,7 @@ Take a task from "described" to "codex-approved + PR open" without babysitting. 
 
 ```
 /clodex <task description> [thinking-level] [flags]
+/clodex --from-pr [<num>] [<task description>] [thinking-level] [flags]
 /clodex --resume
 /clodex --continue [override flags]
 /clodex --help | --about | -h
@@ -310,6 +314,7 @@ Take a task from "described" to "codex-approved + PR open" without babysitting. 
 | `--threshold X` | `medium` | highest acceptable severity: `approve` \| `low` \| `medium` \| `high` \| `critical` |
 | `--skip-brainstorm` | off | skip Phase 1 plan + brainstorm; use forge inline |
 | `--context-tight` | off | recommend session split at every Phase 4 iteration boundary |
+| `--from-pr [<num>]` | — | bootstrap state from an existing PR and jump to Phase 4 (skips Phases 1–3); auto-detects PR if `<num>` omitted; mutually exclusive with `--resume`/`--continue`/`--reset-review-iter`/`--skip-brainstorm` |
 | `--resume` | — | continue an interrupted run (no config overrides accepted) |
 | `--continue` | — | extend a finished/stalled run; accepts `--max-iter`, `--threshold`, thinking-level overrides |
 | `--reset-review-iter` | — | with `--continue`, reset iteration counter to 0 |
@@ -355,6 +360,12 @@ A finding blocks iff its severity rank is strictly greater than the threshold ra
 
 # Large PR, plan for multi-session up front
 /clodex Implement OIDC auth ultrathink --max-iter 8 --context-tight
+
+# Already shipped a PR outside clodex — just want the review-fix loop on it
+/clodex --from-pr 86 --max-iter 5 --threshold medium
+
+# Same, with explicit task description (overrides PR title)
+/clodex --from-pr 86 "Read-only osit_viewer admin role" --max-iter 5 --threshold medium
 
 # Extend a finished run with more budget, loosening threshold (accept high+medium+low)
 /clodex --continue --max-iter 10 --threshold high
@@ -418,9 +429,12 @@ After Phase 1 (and after every later phase that changes state), write `.clodex/s
   "verdict": null,
   "findings_history": [],
   "prior_runs": [],
-  "pending_migrations": []
+  "pending_migrations": [],
+  "bootstrapped_from_pr": false
 }
 ```
+
+**`bootstrapped_from_pr` (v0.3.2+)** is `true` when state was created via `--from-pr` (Phase 0.7) — bypassing Phases 1–3 entirely — and `false` (or absent) for full pipeline runs. The flag is durable: it persists through `--continue` extensions and surfaces in the Phase 5 report's preamble line so reviewers reading the run later know there were never Phase 1–3 artifacts to look for. Forward-compat: state files missing this field (pre-v0.3.2) are treated as `bootstrapped_from_pr: false`. No migration required.
 
 `findings_history[i]` records iteration `i`'s codex output (compact): `{ iteration, job_id, verdict, summary, counts: {critical, high, medium, low}, blocking_count, committed_fix_sha, review_method, focus_path, codex_json_path, review_path, fix_path, stalled_breadcrumb_path, broker_recovery_attempted, broker_pid_killed, retried_after_broker_recovery }`. The five `*_path` fields point at the canonical per-iteration files under `.clodex/runs/<branch-slug>/` (see "Persist artifacts to disk" in Context budget discipline). `focus_path` is always populated. `codex_json_path` + `review_path` are populated when codex produced a verdict (regardless of whether findings-fixer ran); they are `null` on stalled/error/hang. `fix_path` is `null` unless the findings-fixer was dispatched (verdict was `needs-attention` with blocking findings). `stalled_breadcrumb_path` is `null` unless the iteration ended with verdict in `{stalled, error, codex-reproducible-hang}`. The pairing `(codex_json_path != null) XOR (stalled_breadcrumb_path != null)` holds for every iteration that completed any way at all — if both are null, the orchestrator halted before launching codex (no useful state to inspect).
 
@@ -451,16 +465,16 @@ Create `.clodex/` if it doesn't exist. Add `.clodex/` to `.gitignore` if not alr
 **Before the first pre-flight tool call,** emit a single banner line to chat so the user can verify which plugin version is active without reading the help block:
 
 ```
-[clodex v0.3.0] starting <run-type>: <task description, truncated to 80 chars>
+[clodex v0.3.2] starting <run-type>: <task description, truncated to 80 chars>
 ```
 
-`<run-type>` is one of `new task`, `--resume`, `--continue`. For `--resume` / `--continue`, the task description comes from `state.json`. Update this version string whenever the plugin version bumps — it's the user's only quick verification that the new version actually loaded.
+`<run-type>` is one of `new task`, `--resume`, `--continue`, `--from-pr`. For `--resume` / `--continue`, the task description comes from `state.json`. For `--from-pr`, the task description is the user-supplied positional or the PR title (resolved in Phase 0.7). Update this version string whenever the plugin version bumps — it's the user's only quick verification that the new version actually loaded.
 
 **Immediately after the banner, before any other tool call**, do a fresh hard-rules read:
 
 1. Resolve `<plugin>` via `Glob ~/.claude/plugins/**/clodex/skills/clodex/HARD_RULES.md` (pick the first/only match).
 2. Run `Bash(command: 'cat "<resolved-path>"', description: "Read fresh hard rules")` and treat its stdout as the authoritative hard-rules text for this run (see "Hard rules — NEVER violate these" section above). If the rules in your loaded SKILL.md context conflict with this fresh read, the fresh read wins — your loaded SKILL.md may be stale.
-3. Append the HARD_RULES.md version line (last line of the file) to the banner: `[clodex v0.3.0 / hard-rules v0.3] starting ...` (re-emit the banner with both versions; this lets the user spot the case where SKILL.md and HARD_RULES.md are out of sync. Plugin version and hard-rules version can legitimately differ — they're bumped independently. Plugin version bumps whenever any file changes; hard-rules version bumps only when the rules themselves change. v0.3 of hard-rules reframes Rules 1 and 2 — Rule 1 separates review-tool identity from invocation mechanics; Rule 2 is now a positive contract enumerating allowed plugin-state operations).
+3. Append the HARD_RULES.md version line (last line of the file) to the banner: `[clodex v0.3.2 / hard-rules v0.3.1] starting ...` (re-emit the banner with both versions; this lets the user spot the case where SKILL.md and HARD_RULES.md are out of sync. Plugin version and hard-rules version can legitimately differ — they're bumped independently. Plugin version bumps whenever any file changes; hard-rules version bumps only when the rules themselves change. v0.3 of hard-rules reframes Rules 1 and 2 — Rule 1 separates review-tool identity from invocation mechanics; Rule 2 is now a positive contract enumerating allowed plugin-state operations).
 
 Then run these in parallel:
 
@@ -642,6 +656,143 @@ fi
 The cancel command is invoked via Bash per Hard Rule 1 (Bash is canonical for all codex-companion subcommand invocations). If the cancel fails on the MSYS bug, surface the failure to the user with the explicit manual-recovery command (PowerShell `cancel` invocation) — do not silently switch shells under Hard Rule 4.
 
 If the orphan cleanup itself fails (e.g., cancel via Bash errors out due to MSYS bug, or the post-cancel status still reports running): halt and surface, exactly as Phase 0.5 does. Do NOT escalate to direct state-file edits — that remains forbidden under Rule 2.
+
+### Pre-flight `--from-pr` bootstrap (v0.3.2 — runs after orphaned-state cleanup)
+
+**Only runs if `--from-pr` was passed.** Otherwise this phase is a no-op; proceed to Phase 1.
+
+This phase bootstraps a fresh `.clodex/state.json` from an existing open GitHub PR, then jumps directly to Phase 4 (review-fix loop). It is the first-class entry path for "implementation already done outside clodex; only the review-fix loop is wanted." Skips Phases 1–3 entirely. Phase 0.5 (broker wedge) and Phase 0.6 (orphan cleanup) still run before this phase as normal pre-flight; they're independent of bootstrap state.
+
+The bootstrap is a `.clodex/` write, which is allowed under Hard Rule 2's positive contract (point 4). All validation is `gh` + `git` read-only; no plugin-internal-state writes are involved.
+
+Run these steps in order. On any halt, surface a single clear line to the user; do NOT improvise around the failure (Rule 4).
+
+1. **Halt if `.clodex/state.json` already exists.** Bootstrap is destructive (overwrites the prior state file), so refuse rather than silently clobber:
+
+   ```bash
+   if [ -f .clodex/state.json ]; then
+     echo "[clodex --from-pr] HALT: .clodex/state.json already exists for this repo."
+     echo "  - To extend the existing run, use: /clodex --continue --reset-review-iter --max-iter N"
+     echo "  - To start fresh, delete .clodex/state.json and re-run /clodex --from-pr <num>"
+     exit 1
+   fi
+   ```
+
+2. **Resolve PR number and metadata.** If `<num>` was passed on the CLI, use it. Otherwise auto-detect via `gh pr view` on the current branch:
+
+   ```bash
+   if [ -n "$FROM_PR_NUM" ]; then
+     PR_JSON=$(gh pr view "$FROM_PR_NUM" --json number,url,headRefName,headRefOid,title,state 2>&1) || {
+       echo "[clodex --from-pr] HALT: gh pr view $FROM_PR_NUM failed: $PR_JSON"
+       echo "  - Verify the PR number is correct, or omit it to auto-detect from the current branch."
+       exit 1
+     }
+   else
+     CURRENT_BRANCH=$(git branch --show-current)
+     PR_JSON=$(gh pr view --json number,url,headRefName,headRefOid,title,state 2>&1) || {
+       echo "[clodex --from-pr] HALT: no PR associated with current branch '$CURRENT_BRANCH'."
+       echo "  - Pass --from-pr <num> explicitly, or check out the PR's branch first via 'gh pr checkout <num>'."
+       exit 1
+     }
+   fi
+   ```
+
+3. **Validate PR is OPEN.** No point running review on merged/closed work:
+
+   ```bash
+   PR_STATE=$(printf '%s' "$PR_JSON" | node -e "let r='';process.stdin.on('data',c=>r+=c);process.stdin.on('end',()=>{try{process.stdout.write(JSON.parse(r).state||'')}catch{}})")
+   if [ "$PR_STATE" != "OPEN" ]; then
+     echo "[clodex --from-pr] HALT: PR is not OPEN (state=$PR_STATE). Clodex requires an open PR to review."
+     exit 1
+   fi
+   ```
+
+4. **Validate branch + HEAD parity.** The local branch must match the PR's `headRefName` AND the local HEAD SHA must equal the PR's `headRefOid`. If branch name differs, halt and direct the user to `gh pr checkout` (do NOT auto-checkout — Rule 4: user may have uncommitted work we'd clobber). If branch matches but SHA differs, halt with a pull/push hint so codex always reviews exactly what's in the PR, not a local-only divergent tip:
+
+   ```bash
+   PR_HEAD_BRANCH=$(printf '%s' "$PR_JSON" | node -e "let r='';process.stdin.on('data',c=>r+=c);process.stdin.on('end',()=>{try{process.stdout.write(JSON.parse(r).headRefName||'')}catch{}})")
+   PR_HEAD_SHA=$(printf '%s' "$PR_JSON" | node -e "let r='';process.stdin.on('data',c=>r+=c);process.stdin.on('end',()=>{try{process.stdout.write(JSON.parse(r).headRefOid||'')}catch{}})")
+   CURRENT_BRANCH=$(git branch --show-current)
+   LOCAL_HEAD_SHA=$(git rev-parse HEAD)
+   PR_NUM=$(printf '%s' "$PR_JSON" | node -e "let r='';process.stdin.on('data',c=>r+=c);process.stdin.on('end',()=>{try{process.stdout.write(String(JSON.parse(r).number||''))}catch{}})")
+
+   if [ "$CURRENT_BRANCH" != "$PR_HEAD_BRANCH" ]; then
+     echo "[clodex --from-pr] HALT: current branch '$CURRENT_BRANCH' does not match PR #$PR_NUM's head branch '$PR_HEAD_BRANCH'."
+     echo "  - Run 'gh pr checkout $PR_NUM' to switch (verify uncommitted work first), then re-run /clodex --from-pr."
+     exit 1
+   fi
+
+   if [ "$LOCAL_HEAD_SHA" != "$PR_HEAD_SHA" ]; then
+     SHORT_LOCAL=$(printf '%s' "$LOCAL_HEAD_SHA" | cut -c1-7)
+     SHORT_REMOTE=$(printf '%s' "$PR_HEAD_SHA" | cut -c1-7)
+     echo "[clodex --from-pr] HALT: local HEAD ($SHORT_LOCAL) does not match PR #$PR_NUM head ($SHORT_REMOTE)."
+     echo "  - If the PR was force-pushed remotely: git pull --ff-only"
+     echo "  - If you have local commits not yet pushed: git push"
+     echo "  - Then re-run /clodex --from-pr $PR_NUM."
+     exit 1
+   fi
+   ```
+
+5. **Write `.clodex/state.json`** with bootstrapped values. Use Node to JSON-encode safely (avoids shell-quoting hazards in the PR title):
+
+   ```bash
+   mkdir -p .clodex
+   # Ensure .clodex/.gitignore exists (idempotent — same pattern as the fresh-task path)
+   if [ ! -f .clodex/.gitignore ]; then
+     printf '*\n' > .clodex/.gitignore
+   fi
+
+   PR_URL=$(printf '%s' "$PR_JSON" | node -e "let r='';process.stdin.on('data',c=>r+=c);process.stdin.on('end',()=>{try{process.stdout.write(JSON.parse(r).url||'')}catch{}})")
+   PR_TITLE=$(printf '%s' "$PR_JSON" | node -e "let r='';process.stdin.on('data',c=>r+=c);process.stdin.on('end',()=>{try{process.stdout.write(JSON.parse(r).title||'')}catch{}})")
+   STARTED_AT=$(date -u +"%Y-%m-%dT%H:%M:%SZ")
+
+   # $FROM_PR_TASK = user-supplied task description (positional after --from-pr <num>); empty if absent
+   # $MAX_ITER, $THRESHOLD, $THINKING_LEVEL, $CONTEXT_TIGHT come from arg parsing (defaults: 5, "medium", "think hard", false)
+   TASK="${FROM_PR_TASK:-$PR_TITLE}"
+
+   node -e "
+     const fs = require('fs');
+     const state = {
+       version: 2,
+       task: process.env.TASK,
+       thinking_level: process.env.THINKING_LEVEL || 'think hard',
+       max_iter: parseInt(process.env.MAX_ITER || '5', 10),
+       threshold: process.env.THRESHOLD || 'medium',
+       context_tight: process.env.CONTEXT_TIGHT === 'true',
+       started_at: process.env.STARTED_AT,
+       branch: process.env.PR_HEAD_BRANCH,
+       plan_file: null,
+       pr_url: process.env.PR_URL,
+       pr_number: parseInt(process.env.PR_NUM, 10),
+       iteration: 0,
+       last_codex_job_id: null,
+       verdict: null,
+       findings_history: [],
+       prior_runs: [],
+       pending_migrations: [],
+       bootstrapped_from_pr: true
+     };
+     fs.writeFileSync('.clodex/state.json', JSON.stringify(state, null, 2));
+   "
+   ```
+
+   Pass the values above through the `env` of the Bash invocation (the Bash tool supports this implicitly via shell expansion in the heredoc — or set them inline before the `node -e` call).
+
+6. **Surface the bootstrap confirmation** as a single line to chat:
+
+   ```
+   [clodex --from-pr v0.3.2] bootstrapped .clodex/state.json from PR #<num> ("<title>") on branch <headRefName> @ <short-sha>; entering Phase 4 with max-iter=<N>, threshold=<t>, thinking=<level>.
+   ```
+
+7. **Jump directly to Phase 4 — Review loop.** Skip Phases 1–3. Phase 4's loop pseudocode (`while iteration < max_iter: iteration += 1; ...`) handles `iteration: 0` → first iteration is 1, with no special-casing needed.
+
+**What this phase does NOT do (per Rule 4):**
+
+- Does NOT auto-checkout the PR's branch if the user is on a different branch. Halts with `gh pr checkout <num>` as the recovery command.
+- Does NOT auto-pull or auto-push to reconcile HEAD-SHA divergence. Halts with the matching `git` command as the recovery hint.
+- Does NOT silently overwrite an existing `.clodex/state.json`. Halts and directs the user to either delete it or use `--continue --reset-review-iter`.
+- Does NOT write to any plugin-internal state file. Only writes are to `.clodex/state.json` and `.clodex/.gitignore` (both under the Rule 2 positive contract).
+- Does NOT recover the prior `last_codex_job_id` of the PR (there isn't one — this is the first time clodex is touching this work). If the user wants to extend an existing clodex run, they should use `--continue` instead.
 
 ## Phase 1 — Brainstorm + plan
 
@@ -1104,10 +1255,14 @@ Then loop back to 4a for the next iteration.
 
 ## Phase 5 — Report
 
-Print a concise terminal-friendly summary:
+Print a concise terminal-friendly summary. If `state.bootstrapped_from_pr == true`, include a one-line preamble immediately after the "Clodex Complete" heading: `Origin: bootstrapped from existing PR via --from-pr (no Phase 1–3 artifacts produced this run).` This makes it explicit to anyone reading the report later that there was never a plan or implementation phase in this run.
 
 ```
 ## Clodex Complete
+
+<if state.bootstrapped_from_pr:>
+Origin: bootstrapped from existing PR via --from-pr (no Phase 1–3 artifacts produced this run).
+<end if>
 
 Task: <task>
 Branch: <branch>
@@ -1212,7 +1367,7 @@ Use when the prior run reached a terminal verdict (`approve`, `threshold-satisfi
 10. Surface a one-line summary of the extension before re-entering the loop: `"[clodex --continue] extending iter <N> of <new_max_iter> (was <prior_iter>/<prior_max_iter>, verdict=<prior_verdict>); threshold=<t>; thinking=<level>"`.
 11. Check out the branch if not already on it, then jump to Phase 4 at `iteration + 1`.
 
-If both `--resume` and `--continue` were passed, halt with: `"--resume and --continue are mutually exclusive. Use --resume for an interrupted run (no verdict yet), --continue to extend a finished/stalled run."`
+If both `--resume` and `--continue` were passed, halt with: `"--resume and --continue are mutually exclusive. Use --resume for an interrupted run (no verdict yet), --continue to extend a finished/stalled run."` Same for any pair drawn from `{--resume, --continue, --from-pr}` — they're pairwise exclusive (see Argument parsing). `--from-pr` is also incompatible with `--reset-review-iter` and `--skip-brainstorm`; halt with the matching one-line explanation.
 
 ## Thinking-level handling
 

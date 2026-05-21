@@ -4,7 +4,7 @@ Autonomous development loop for Claude Code: plan → implement → ship a PR �
 
 A ralph-loop variant tuned for the specific workflow of "Claude builds, codex reviews, Claude fixes, codex re-reviews." Composes existing skills (`superpowers:brainstorming`, `superpowers:writing-plans`, `superpowers:executing-plans`, `forge`, `ship`, `codex-focus`) and the codex plugin's `codex-companion.mjs` script rather than reimplementing them.
 
-**Status:** v0.3.1 — REVERT of the v0.3.0 PowerShell-preferred pivot (paired with HARD_RULES.md v0.3.1). Investigation across May 14–18 evidence converged on shell choice (Bash vs PowerShell) being the load-bearing variable that broke a working pattern: the May 14 PR #77 production run, a May 18 manual `/codex:adversarial-review` Bash invocation, and clodex v0.3.0's PowerShell invocation all attached to the same broker process and codex CLI binary — only the Bash-invoked ones succeeded. v0.3.1 restores Bash as the canonical shell for all codex-companion subcommand invocations (matches v0.2.5–v0.2.9), restores the v0.2.8 single-retry broker-wedge recovery (was: v0.3.0 3-retry exponential backoff), and preserves v0.3.0's Phase 0.6 orphaned-state cleanup as a Bash-invoked operation. PowerShell is retained only as the narrow sanctioned carve-out for `Stop-Process` broker-kill (because Git Bash's `taskkill /PID` fallback hits the MSYS path-mangling bug, upstream openai/codex-plugin-cc#331). The `< /dev/null` stdin closure on the launch is preserved from v0.3.0 as the one durable defense-in-depth measure. v0.2.9 lifted `--version`/`--help` into commands/clodex.md. v0.2.8 added broker wedge auto-recovery. v0.2.7 added per-iteration `iter-NNN-stalled.md` breadcrumbs + ~3-min stall detection. v0.2.1 adapts to codex plugin v1.0.4's `disable-model-invocation` policy (see "Codex plugin v1.0.4 compatibility (v0.2.1)" below); v0.2 was motivated by a v0.1 failure on a larger PR — see "Lessons from PR #78" below.
+**Status:** v0.3.2 — Adds `--from-pr [<num>]` flag for mid-development PR handoff. When plan + implement + ship were done outside clodex (manual work, another agent, an earlier session), `--from-pr` bootstraps `.clodex/state.json` from `gh pr view` metadata, validates branch + HEAD-SHA parity against the PR, then jumps directly to Phase 4 (review-fix loop), skipping Phases 1–3 entirely. PR number is optional — clodex auto-detects from the current branch. Bootstraps with `bootstrapped_from_pr: true` so the Phase 5 report discloses the origin. Mutually exclusive with `--resume`, `--continue`, `--reset-review-iter`, `--skip-brainstorm`. Halts on existing `.clodex/state.json`, branch/SHA mismatch, etc. with copy-pasteable recovery hints (Rule 4: never auto-checkout/auto-pull; user may have uncommitted work). v0.3.1 reverted the v0.3.0 PowerShell-preferred pivot — Bash remains canonical for all codex-companion subcommand invocations. Single-retry broker-wedge recovery preserved. Phase 0.6 orphaned-state cleanup preserved (Bash-invoked). PowerShell is retained only as the narrow sanctioned carve-out for `Stop-Process` broker-kill (because Git Bash's `taskkill /PID` fallback hits the MSYS path-mangling bug, upstream openai/codex-plugin-cc#331). The `< /dev/null` stdin closure on the launch is preserved from v0.3.0 as the one durable defense-in-depth measure. Paired with HARD_RULES.md v0.3.1 (unchanged in v0.3.2 — `--from-pr` writes only to `.clodex/`, already allowed under Rule 2's positive contract). v0.2.9 lifted `--version`/`--help` into commands/clodex.md. v0.2.8 added broker wedge auto-recovery. v0.2.7 added per-iteration `iter-NNN-stalled.md` breadcrumbs + ~3-min stall detection. v0.2.1 adapts to codex plugin v1.0.4's `disable-model-invocation` policy (see "Codex plugin v1.0.4 compatibility (v0.2.1)" below); v0.2 was motivated by a v0.1 failure on a larger PR — see "Lessons from PR #78" below.
 
 ## Why
 
@@ -38,7 +38,7 @@ cat > ~/clodex-marketplace/.claude-plugin/marketplace.json <<'EOF'
   "description": "Clodex plugin via GitHub clone",
   "owner": { "name": "you" },
   "plugins": [
-    { "name": "clodex", "source": "../clodex", "version": "0.3.1", "category": "workflow" }
+    { "name": "clodex", "source": "../clodex", "version": "0.3.2", "category": "workflow" }
   ]
 }
 EOF
@@ -89,7 +89,7 @@ The skill runs a pre-flight check on these and stops early with a clear error if
 ## Usage
 
 ```
-/clodex <task description> [think | think hard | think harder | ultrathink] [--max-iter N] [--threshold critical|high|medium|low] [--skip-brainstorm] [--context-tight] [--resume | --continue [--reset-review-iter]]
+/clodex <task description> [think | think hard | think harder | ultrathink] [--max-iter N] [--threshold critical|high|medium|low] [--skip-brainstorm] [--context-tight] [--from-pr [<num>] [<task description>]] [--resume | --continue [--reset-review-iter]]
 /clodex --help                # full reference in-session
 ```
 
@@ -132,6 +132,14 @@ Resume an interrupted run (session crashed, terminal closed — verdict still nu
 ```
 /clodex --resume
 ```
+
+Already shipped a PR outside clodex — just want the review-fix loop on it (v0.3.2+):
+
+```
+/clodex --from-pr 86 --max-iter 5 --threshold medium
+```
+
+Bootstraps `.clodex/state.json` from the PR's metadata (validates branch + HEAD-SHA parity), then jumps directly to Phase 4. Skip the `<num>` to auto-detect from the current branch. Halts with copy-pasteable recovery hints if state already exists or if the local branch / HEAD diverges from the PR.
 
 Extend a finished run with more budget, loosening the threshold to accept high-severity findings (verdict was `max-iter-hit` with high findings remaining; user is willing to ship them and wants the loop to keep going only for critical):
 
@@ -322,7 +330,7 @@ v0.2 hardens against all four failures: the hard rules in SKILL.md make each of 
 ```
 clodex/
 ├── .claude-plugin/
-│   └── plugin.json            # plugin manifest (version 0.3.1)
+│   └── plugin.json            # plugin manifest (version 0.3.2)
 ├── skills/
 │   └── clodex/
 │       └── SKILL.md           # orchestration playbook (the main agent reads this)

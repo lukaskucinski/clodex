@@ -8,6 +8,7 @@ description: |
     --threshold X          highest acceptable severity: approve|low|medium|high|critical  (default: medium)
     --skip-brainstorm      skip Phase 1 plan + brainstorm; use forge inline
     --context-tight        recommend session split at every Phase 4 iteration boundary
+    --from-pr [<num>]      bootstrap state from existing PR and jump to Phase 4 (skips Phases 1-3)
     --resume               continue an interrupted run (no config overrides)
     --continue             extend a finished/stalled run (accepts override flags)
     --reset-review-iter    with --continue, reset iteration counter to 0
@@ -33,6 +34,12 @@ description: |
     # Large PR, plan for multi-session
     /clodex Implement OIDC auth ultrathink --max-iter 8 --context-tight
 
+    # Already shipped a PR outside clodex — just want the review-fix loop on it
+    /clodex --from-pr 86 --max-iter 5 --threshold medium
+
+    # Same, with explicit task description (overrides PR title)
+    /clodex --from-pr 86 "Read-only viewer admin role" --max-iter 5 --threshold medium
+
     # Continue a finished run, loosening threshold (accept high+medium+low)
     /clodex --continue --max-iter 10 --threshold high
 
@@ -45,11 +52,11 @@ description: |
   STATE  .clodex/state.json (gitignored, v2 schema). Resumable + extensible across sessions.
   HELP   /clodex --help   (full reference in-session — use when this tooltip truncates)
   TRIGGERS  /clodex <task>, "ralph this", "run the codex loop on X".
-argument-hint: "<task description> [think|think hard|think harder|ultrathink] [--max-iter N] [--threshold approve|low|medium|high|critical] [--skip-brainstorm] [--context-tight] [--resume | --continue [--reset-review-iter]] | --help | --version"
+argument-hint: "<task description> [think|think hard|think harder|ultrathink] [--max-iter N] [--threshold approve|low|medium|high|critical] [--skip-brainstorm] [--context-tight] [--from-pr [<num>] [<task description>]] [--resume | --continue [--reset-review-iter]] | --help | --version"
 allowed-tools: Skill, TaskCreate, TaskUpdate, TaskList, TaskGet, Read, Write, Edit, Glob, Grep, Bash, Agent
 ---
 
-# /clodex entry point (v0.2.9 — meta-flag handling lifted from SKILL.md to here)
+# /clodex entry point (v0.3.2 — `--from-pr` flag for mid-development PR handoff)
 
 Process `$ARGUMENTS` in this order, taking the FIRST applicable branch. Branches 1 and 2 are handled directly at this slash-command level (never invoke the clodex skill for them) so they always reflect the currently-installed plugin version, even in long-running Claude Code sessions whose SKILL.md cache predates the relevant flag. Slash command bodies are re-read from disk per invocation; skill content is cached at session start.
 
@@ -58,7 +65,7 @@ Process `$ARGUMENTS` in this order, taking the FIRST applicable branch. Branches
 If `$ARGUMENTS` contains any of `--version`, `-v`, or `-V` as a whole token (anywhere in the args, any order), do EXACTLY this and stop:
 
 ```
-Bash(command: 'printf "clodex@lukas-local v0.3.1\n"', description: "Print clodex version")
+Bash(command: 'printf "clodex@lukas-local v0.3.2\n"', description: "Print clodex version")
 ```
 
 The Bash tool's stdout is the user-visible response. Emit it as-is, with no preamble, no commentary, no surrounding markdown. Do NOT invoke the `clodex` skill. Do NOT add explanatory text. Stop after the Bash output appears.
@@ -87,4 +94,4 @@ The skill defines four hard rules (codex-only review pass, no plugin-state write
 
 Do not auto-merge the PR. End with a Phase 5 report that surfaces continuation commands the user can copy-paste if they want more iterations.
 
-Maintain `.clodex/state.json` throughout so the run is resumable via `/clodex --resume` (interrupted run) or extensible via `/clodex --continue` (finished or stalled run).
+Maintain `.clodex/state.json` throughout so the run is resumable via `/clodex --resume` (interrupted run) or extensible via `/clodex --continue` (finished or stalled run). `/clodex --from-pr [<num>]` is the entry path for PRs already shipped outside clodex — the skill's Phase 0.7 bootstraps state from `gh pr view` and jumps directly to Phase 4.
